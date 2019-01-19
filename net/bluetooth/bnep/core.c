@@ -51,7 +51,6 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/l2cap.h>
 #include <net/bluetooth/hci_core.h>
-#include <net/bluetooth/l2cap.h>
 
 #include "bnep.h"
 
@@ -557,10 +556,10 @@ int bnep_add_connection(struct bnep_connadd_req *req, struct socket *sock)
 	u8 dst[ETH_ALEN], src[ETH_ALEN];
 	int err;
 
-	BT_DBG("");
-
 	if (!l2cap_is_socket(sock))
 		return -EBADFD;
+
+	BT_DBG("");
 
 	baswap((void *) dst, &bt_sk(sock->sk)->dst);
 	baswap((void *) src, &bt_sk(sock->sk)->src);

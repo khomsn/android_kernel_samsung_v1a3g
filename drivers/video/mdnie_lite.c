@@ -647,10 +647,7 @@ static ssize_t sensorRGB_store(struct device *dev,
 	if (ret < 0)
 		return ret;
 
-	if (mdnie->enable && (mdnie->accessibility == ACCESSIBILITY_OFF)
-		&& (mdnie->mode == AUTO)
-		&& ((mdnie->scenario == BROWSER_MODE)
-		|| (mdnie->scenario == EBOOK_MODE))) {
+	if (mdnie->enable) {
 		dev_info(dev, "%s, white_r %d, white_g %d, white_b %d\n",
 			__func__, white_red, white_green, white_blue);
 
@@ -676,6 +673,13 @@ static ssize_t sensorRGB_store(struct device *dev,
 		mdnie->white_b = white_blue;
 
 		mdnie_update_sequence(mdnie, &(mdnie->table_buffer));
+
+		store_ascr(table, MDNIE_WHITE_R,
+				(unsigned char)white_red);
+		store_ascr(table, MDNIE_WHITE_G,
+				(unsigned char)white_green);
+		store_ascr(table, MDNIE_WHITE_B,
+				(unsigned char)white_blue);
 	}
 
 	return count;
