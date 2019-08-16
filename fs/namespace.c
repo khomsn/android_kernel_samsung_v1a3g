@@ -742,6 +742,7 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 	if (sb->s_op->clone_mnt_data) {
 		mnt->mnt.data = sb->s_op->clone_mnt_data(old->mnt.data);
 		if (!mnt->mnt.data) {
+			err = -ENOMEM;
 			goto out_free;
 		}
 	}
@@ -1173,8 +1174,6 @@ static int do_umount(struct mount *mnt, int flags)
 		 * Special case for "unmounting" root ...
 		 * we just try to remount it readonly.
 		 */
-		if (!capable(CAP_SYS_ADMIN))
-			return -EPERM;
 		down_write(&sb->s_umount);
 		if (!(sb->s_flags & MS_RDONLY))
 			retval = do_remount_sb(sb, MS_RDONLY, NULL, 0);

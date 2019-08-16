@@ -1,0 +1,5 @@
+arch/arm/configs/lineageos_deathly_Khomsn_V1_v1a3g_defconfig.orig
+drivers/gpu/ion/ion_system_heap.c.orig
+drivers/md/dm-crypt.c.orig
+mm/huge_memory.c.orig
+mm/mremap.c.orig
