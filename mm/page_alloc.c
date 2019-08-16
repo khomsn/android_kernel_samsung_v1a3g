@@ -5089,10 +5089,11 @@ void setup_per_zone_wmarks(void)
 			zone->watermark[WMARK_MIN] = min;
 		}
 
-		zone->watermark[WMARK_LOW]  = min_wmark_pages(zone) +
+		zone->watermark[WMARK_LOW] = min_wmark_pages(zone) +
 					low + (min >> 2);
 		zone->watermark[WMARK_HIGH] = min_wmark_pages(zone) +
 					low + (min >> 1);
+
 		setup_zone_migrate_reserve(zone);
 		spin_unlock_irqrestore(&zone->lock, flags);
 	}
@@ -5309,9 +5310,10 @@ void *__init alloc_large_system_hash(const char *tablename,
 				     int flags,
 				     unsigned int *_hash_shift,
 				     unsigned int *_hash_mask,
-				     unsigned long limit)
+				     unsigned long low_limit,
+				     unsigned long high_limit)
 {
-	unsigned long long max = limit;
+	unsigned long long max = high_limit;
 	unsigned long log2qty, size;
 	void *table = NULL;
 
@@ -5349,6 +5351,8 @@ void *__init alloc_large_system_hash(const char *tablename,
 	}
 	max = min(max, 0x80000000ULL);
 
+	if (numentries < low_limit)
+		numentries = low_limit;
 	if (numentries > max)
 		numentries = max;
 

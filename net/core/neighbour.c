@@ -846,9 +846,10 @@ next_elt:
 static __inline__ int neigh_max_probes(struct neighbour *n)
 {
 	struct neigh_parms *p = n->parms;
-	return (n->nud_state & NUD_PROBE) ?
-		p->ucast_probes :
-		p->ucast_probes + p->app_probes + p->mcast_probes;
+	int max_probes = p->ucast_probes + p->app_probes;
+	if (!(n->nud_state & NUD_PROBE))
+		max_probes += p->mcast_probes;
+	return max_probes;
 }
 
 static void neigh_invalidate(struct neighbour *neigh)
@@ -983,6 +984,8 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 	rc = 0;
 	if (neigh->nud_state & (NUD_CONNECTED | NUD_DELAY | NUD_PROBE))
 		goto out_unlock_bh;
+	if (neigh->dead)
+		goto out_dead;
 
 	if (!(neigh->nud_state & (NUD_STALE | NUD_INCOMPLETE))) {
 		if (neigh->parms->mcast_probes + neigh->parms->app_probes) {
@@ -1036,6 +1039,13 @@ out_unlock_bh:
 		write_unlock(&neigh->lock);
 	local_bh_enable();
 	return rc;
+
+out_dead:
+	if (neigh->nud_state & NUD_STALE)
+		goto out_unlock_bh;
+	write_unlock_bh(&neigh->lock);
+	kfree_skb(skb);
+	return 1;
 }
 EXPORT_SYMBOL(__neigh_event_send);
 
@@ -1098,6 +1108,8 @@ int neigh_update(struct neighbour *neigh, const u8 *lladdr, u8 new,
 
 	if (!(flags & NEIGH_UPDATE_F_ADMIN) &&
 	    (old & (NUD_NOARP | NUD_PERMANENT)))
+		goto out;
+	if (neigh->dead)
 		goto out;
 
 	if (!(new & NUD_VALID)) {
@@ -2566,6 +2578,7 @@ static void *neigh_get_idx_any(struct seq_file *seq, loff_t *pos)
 }
 
 void *neigh_seq_start(struct seq_file *seq, loff_t *pos, struct neigh_table *tbl, unsigned int neigh_seq_flags)
+	__acquires(tbl->lock)
 	__acquires(rcu_bh)
 {
 	struct neigh_seq_state *state = seq->private;
@@ -2576,6 +2589,7 @@ void *neigh_seq_start(struct seq_file *seq, loff_t *pos, struct neigh_table *tbl
 
 	rcu_read_lock_bh();
 	state->nht = rcu_dereference_bh(tbl->nht);
+	read_lock(&tbl->lock);
 
 	return *pos ? neigh_get_idx_any(seq, pos) : SEQ_START_TOKEN;
 }
@@ -2609,8 +2623,13 @@ out:
 EXPORT_SYMBOL(neigh_seq_next);
 
 void neigh_seq_stop(struct seq_file *seq, void *v)
+	__releases(tbl->lock)
 	__releases(rcu_bh)
 {
+	struct neigh_seq_state *state = seq->private;
+	struct neigh_table *tbl = state->tbl;
+
+	read_unlock(&tbl->lock);
 	rcu_read_unlock_bh();
 }
 EXPORT_SYMBOL(neigh_seq_stop);

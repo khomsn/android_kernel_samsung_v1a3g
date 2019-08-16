@@ -255,7 +255,6 @@ static struct dentry *__sdcardfs_lookup(struct dentry *dentry,
 	/* Use vfs_path_lookup to check if the dentry exists or not */
 	err = vfs_path_lookup(lower_dir_dentry, lower_dir_mnt, name->name, 0,
 				&lower_nd.path);
-
 	/* check for other cases */
 	if (err == -ENOENT) {
 		struct dentry *child;
@@ -341,8 +340,8 @@ static struct dentry *__sdcardfs_lookup(struct dentry *dentry,
 		return lower_dentry;
 	if (!lower_dentry) {
 		/* We called vfs_path_lookup earlier, and did not get a negative
-		 * dentry then. Don't confuse the lower filesystem by forcing one
-		 * on it now...
+		 * dentry then. Don't confuse the lower filesystem by forcing
+		 * one on it now...
 		 */
 		err = -ENOENT;
 		goto out;
@@ -396,7 +395,12 @@ struct dentry *sdcardfs_lookup(struct inode *dir, struct dentry *dentry,
 	}
 
 	/* save current_cred and override it */
-	OVERRIDE_CRED_PTR(SDCARDFS_SB(dir->i_sb), saved_cred, SDCARDFS_I(dir));
+	saved_cred = override_fsids(SDCARDFS_SB(dir->i_sb),
+						SDCARDFS_I(dir)->data);
+	if (!saved_cred) {
+		ret = ERR_PTR(-ENOMEM);
+		goto out_err;
+	}
 
 	sdcardfs_get_lower_path(parent, &lower_parent_path);
 
@@ -427,7 +431,7 @@ struct dentry *sdcardfs_lookup(struct inode *dir, struct dentry *dentry,
 
 out:
 	sdcardfs_put_lower_path(parent, &lower_parent_path);
-	REVERT_CRED(saved_cred);
+	revert_fsids(saved_cred);
 out_err:
 	dput(parent);
 	return ret;

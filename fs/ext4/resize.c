@@ -1152,7 +1152,7 @@ static void ext4_update_super(struct super_block *sb,
 	struct ext4_new_group_data *group_data = flex_gd->groups;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	struct ext4_super_block *es = sbi->s_es;
-	int i, ret;
+	int i;
 
 	BUG_ON(flex_gd->count == 0 || group_data == NULL);
 	/*
@@ -1632,7 +1632,7 @@ int ext4_resize_fs(struct super_block *sb, ext4_fsblk_t n_blocks_count)
 		return 0;
 
 	ext4_get_group_no_and_offset(sb, n_blocks_count - 1, &n_group, &offset);
-	if (n_group > (0xFFFFFFFFUL / EXT4_INODES_PER_GROUP(sb))) {
+	if (n_group >= (0xFFFFFFFFUL / EXT4_INODES_PER_GROUP(sb))) {
 		ext4_warning(sb, "resize would cause inodes_count overflow");
 		return -EINVAL;
 	}

@@ -206,8 +206,8 @@ static int diagchar_open(struct inode *inode, struct file *file)
 	return -ENOMEM;
 
 fail:
-	mutex_unlock(&driver->diagchar_mutex);
 	driver->num_clients--;
+	mutex_unlock(&driver->diagchar_mutex);
 	pr_alert("diag: Insufficient memory for new client");
 	return -ENOMEM;
 }
@@ -409,12 +409,16 @@ long diagchar_ioctl(struct file *filp,
 			success = 0;
 		}
 	} else if (iocmd == DIAG_IOCTL_LSM_DEINIT) {
+		mutex_lock(&driver->diagchar_mutex);
 		for (i = 0; i < driver->num_clients; i++)
 			if (driver->client_map[i].pid == current->tgid)
 				break;
-		if (i == -1)
+		if (i == driver->num_clients) {
+			mutex_unlock(&driver->diagchar_mutex);
 			return -EINVAL;
+		}
 		driver->data_ready[i] |= DEINIT_TYPE;
+		mutex_unlock(&driver->diagchar_mutex);
 		wake_up_interruptible(&driver->wait_q);
 		success = 1;
 	} else if (iocmd == DIAG_IOCTL_SWITCH_LOGGING) {

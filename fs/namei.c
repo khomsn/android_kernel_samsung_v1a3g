@@ -1199,12 +1199,25 @@ static int do_lookup(struct nameidata *nd, struct qstr *name,
 	 */
 	if (nd->flags & LOOKUP_RCU) {
 		unsigned seq;
-		*inode = nd->inode;
-		dentry = __d_lookup_rcu(parent, name, &seq, inode);
+		dentry = __d_lookup_rcu(parent, name, &seq, nd->inode);
 		if (!dentry)
 			goto unlazy;
 
-		/* Memory barrier in read_seqcount_begin of child is enough */
+		/*
+		 * This sequence count validates that the inode matches
+		 * the dentry name information from lookup.
+		 */
+		*inode = dentry->d_inode;
+		if (read_seqcount_retry(&dentry->d_seq, seq))
+			return -ECHILD;
+
+		/*
+		 * This sequence count validates that the parent had no
+		 * changes while we did the lookup of the dentry above.
+		 *
+		 * The memory barrier in read_seqcount_begin of child is
+		 *  enough, we can use __read_seqcount_retry here.
+		 */
 		if (__read_seqcount_retry(&parent->d_seq, nd->seq))
 			return -ECHILD;
 		nd->seq = seq;
@@ -3365,7 +3378,7 @@ int vfs_rename2(struct vfsmount *mnt,
 	if (!error)
 		fsnotify_move(old_dir, new_dir, old_name.name, is_dir,
 			      new_dentry->d_inode, old_dentry);
-	take_dentry_name_snapshot(&old_name, old_dentry);
+	release_dentry_name_snapshot(&old_name);
 
 	return error;
 }

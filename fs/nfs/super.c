@@ -298,6 +298,7 @@ static struct file_system_type nfs_fs_type = {
 	.kill_sb	= nfs_kill_super,
 	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_REVAL_DOT|FS_BINARY_MOUNTDATA,
 };
+MODULE_ALIAS_FS("nfs");
 
 struct file_system_type nfs_xdev_fs_type = {
 	.owner		= THIS_MODULE,
@@ -354,6 +355,7 @@ static struct file_system_type nfs4_remote_fs_type = {
 	.kill_sb	= nfs4_kill_super,
 	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_REVAL_DOT|FS_BINARY_MOUNTDATA,
 };
+MODULE_ALIAS_FS("nfs4");
 
 struct file_system_type nfs4_xdev_fs_type = {
 	.owner		= THIS_MODULE,
@@ -1887,7 +1889,8 @@ static int nfs_validate_mount_data(void *options,
 		memcpy(sap, &data->addr, sizeof(data->addr));
 		args->nfs_server.addrlen = sizeof(data->addr);
 		args->nfs_server.port = ntohs(data->addr.sin_port);
-		if (!nfs_verify_server_address(sap))
+		if (sap->sa_family != AF_INET ||
+		    !nfs_verify_server_address(sap))
 			goto out_no_address;
 
 		if (!(data->flags & NFS_MOUNT_TCP))

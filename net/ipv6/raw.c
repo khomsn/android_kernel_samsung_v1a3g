@@ -615,6 +615,8 @@ static int rawv6_send_hdrinc(struct sock *sk, void *from, int length,
 		ipv6_local_error(sk, EMSGSIZE, fl6, rt->dst.dev->mtu);
 		return -EMSGSIZE;
 	}
+	if (length < sizeof(struct ipv6hdr))
+		return -EINVAL;
 	if (flags&MSG_PROBE)
 		goto out;
 
@@ -1349,7 +1351,6 @@ static struct inet_protosw rawv6_protosw = {
 	.protocol	= IPPROTO_IP,	/* wild card */
 	.prot		= &rawv6_prot,
 	.ops		= &inet6_sockraw_ops,
-	.no_check	= UDP_CSUM_DEFAULT,
 	.flags		= INET_PROTOSW_REUSE,
 };
 

@@ -453,6 +453,10 @@ static int snd_compr_allocate_buffer(struct snd_compr_stream *stream,
 	unsigned int buffer_size;
 	void *buffer;
 
+	if (params->buffer.fragment_size == 0 ||
+	    params->buffer.fragments > SIZE_MAX / params->buffer.fragment_size)
+		return -EINVAL;
+
 	buffer_size = params->buffer.fragment_size * params->buffer.fragments;
 	if (stream->ops->copy) {
 		buffer = NULL;
@@ -658,6 +662,10 @@ static int snd_compr_stop(struct snd_compr_stream *stream)
 	if (!retval) {
 		stream->runtime->state = SNDRV_PCM_STATE_SETUP;
 		wake_up(&stream->runtime->sleep);
+		stream->runtime->hw_pointer = 0;
+		stream->runtime->app_pointer = 0;
+		stream->runtime->total_bytes_available = 0;
+		stream->runtime->total_bytes_transferred = 0;
 	}
 	return retval;
 }

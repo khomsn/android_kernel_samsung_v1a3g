@@ -297,6 +297,7 @@ struct binder_proc {
 	struct mm_struct *vma_vm_mm;
 	struct task_struct *tsk;
 	struct files_struct *files;
+	struct mutex files_lock;
 	struct hlist_node deferred_work_node;
 	int deferred_work;
 	void *buffer;
@@ -368,71 +369,28 @@ struct binder_transaction {
 static void
 binder_defer_work(struct binder_proc *proc, enum binder_deferred_state defer);
 
-/*
- * copied from get_unused_fd_flags
- */
 int task_get_unused_fd_flags(struct binder_proc *proc, int flags)
 {
-	struct files_struct *files = proc->files;
-	int fd, error;
-	struct fdtable *fdt;
 	unsigned long rlim_cur;
 	unsigned long irqs;
+	int ret;
 
-	if (files == NULL)
-		return -ESRCH;
-
-	error = -EMFILE;
-	spin_lock(&files->file_lock);
-
-repeat:
-	fdt = files_fdtable(files);
-	fd = find_next_zero_bit(fdt->open_fds, fdt->max_fds, files->next_fd);
-
-	/*
-	 * N.B. For clone tasks sharing a files structure, this test
-	 * will limit the total number of files that can be opened.
-	 */
-	rlim_cur = 0;
-	if (lock_task_sighand(proc->tsk, &irqs)) {
-		rlim_cur = proc->tsk->signal->rlim[RLIMIT_NOFILE].rlim_cur;
-		unlock_task_sighand(proc->tsk, &irqs);
+	mutex_lock(&proc->files_lock);
+	if (proc->files == NULL) {
+		ret = -ESRCH;
+		goto err;
 	}
-	if (fd >= rlim_cur)
-		goto out;
-
-	/* Do we need to expand the fd array or fd set?  */
-	error = expand_files(files, fd);
-	if (error < 0)
-		goto out;
-
-	if (error) {
-		/*
-		 * If we needed to expand the fs array we
-		 * might have blocked - try again.
-		 */
-		error = -EMFILE;
-		goto repeat;
+	if (!lock_task_sighand(proc->tsk, &irqs)) {
+		ret = -EMFILE;
+		goto err;
 	}
+	rlim_cur = task_rlimit(proc->tsk, RLIMIT_NOFILE);
+	unlock_task_sighand(proc->tsk, &irqs);
 
-	__set_open_fd(fd, fdt);
-	if (flags & O_CLOEXEC)
-		__set_close_on_exec(fd, fdt);
-	else
-		__clear_close_on_exec(fd, fdt);
-	files->next_fd = fd + 1;
-#if 1
-	/* Sanity check */
-	if (fdt->fd[fd] != NULL) {
-		printk(KERN_WARNING "get_unused_fd: slot %d not NULL!\n", fd);
-		fdt->fd[fd] = NULL;
-	}
-#endif
-	error = fd;
-
-out:
-	spin_unlock(&files->file_lock);
-	return error;
+	ret = __alloc_fd(proc->files, 0, rlim_cur, flags);
+err:
+	mutex_unlock(&proc->files_lock);
+	return ret;
 }
 
 /*
@@ -441,28 +399,10 @@ out:
 static void task_fd_install(
 	struct binder_proc *proc, unsigned int fd, struct file *file)
 {
-	struct files_struct *files = proc->files;
-	struct fdtable *fdt;
-
-	if (files == NULL)
-		return;
-
-	spin_lock(&files->file_lock);
-	fdt = files_fdtable(files);
-	BUG_ON(fdt->fd[fd] != NULL);
-	rcu_assign_pointer(fdt->fd[fd], file);
-	spin_unlock(&files->file_lock);
-}
-
-/*
- * copied from __put_unused_fd in open.c
- */
-static void __put_unused_fd(struct files_struct *files, unsigned int fd)
-{
-	struct fdtable *fdt = files_fdtable(files);
-	__clear_open_fd(fd, fdt);
-	if (fd < files->next_fd)
-		files->next_fd = fd;
+	mutex_lock(&proc->files_lock);
+	if (proc->files)
+		__fd_install(proc->files, fd, file);
+	mutex_unlock(&proc->files_lock);
 }
 
 /*
@@ -470,39 +410,23 @@ static void __put_unused_fd(struct files_struct *files, unsigned int fd)
  */
 static long task_close_fd(struct binder_proc *proc, unsigned int fd)
 {
-	struct file *filp;
-	struct files_struct *files = proc->files;
-	struct fdtable *fdt;
 	int retval;
 
-	if (files == NULL)
-		return -ESRCH;
-
-	spin_lock(&files->file_lock);
-	fdt = files_fdtable(files);
-	if (fd >= fdt->max_fds)
-		goto out_unlock;
-	filp = fdt->fd[fd];
-	if (!filp)
-		goto out_unlock;
-	rcu_assign_pointer(fdt->fd[fd], NULL);
-	__clear_close_on_exec(fd, fdt);
-	__put_unused_fd(files, fd);
-	spin_unlock(&files->file_lock);
-	retval = filp_close(filp, files);
-
+	mutex_lock(&proc->files_lock);
+	if (proc->files == NULL) {
+		retval = -ESRCH;
+		goto err;
+	}
+	retval = __close_fd(proc->files, fd);
 	/* can't restart close syscall because file table entry was cleared */
 	if (unlikely(retval == -ERESTARTSYS ||
 		     retval == -ERESTARTNOINTR ||
 		     retval == -ERESTARTNOHAND ||
 		     retval == -ERESTART_RESTARTBLOCK))
 		retval = -EINTR;
-
+err:
+	mutex_unlock(&proc->files_lock);
 	return retval;
-
-out_unlock:
-	spin_unlock(&files->file_lock);
-	return -EBADF;
 }
 
 static inline void binder_lock(const char *tag)
@@ -1268,8 +1192,9 @@ static int binder_inc_ref(struct binder_ref *ref, int strong,
 }
 
 
-static int binder_dec_ref(struct binder_ref *ref, int strong)
+static int binder_dec_ref(struct binder_ref **ptr_to_ref, int strong)
 {
+	struct binder_ref *ref = *ptr_to_ref;
 	if (strong) {
 		if (ref->strong == 0) {
 			binder_user_error("binder: %d invalid dec strong, "
@@ -1296,8 +1221,10 @@ static int binder_dec_ref(struct binder_ref *ref, int strong)
 		}
 		ref->weak--;
 	}
-	if (ref->strong == 0 && ref->weak == 0)
+	if (ref->strong == 0 && ref->weak == 0) {
 		binder_delete_ref(ref);
+		*ptr_to_ref = NULL;
+	}
 	return 0;
 }
 
@@ -1432,7 +1359,7 @@ static void binder_transaction_buffer_release(struct binder_proc *proc,
 			binder_debug(BINDER_DEBUG_TRANSACTION,
 				     "        ref %d desc %d (node %d)\n",
 				     ref->debug_id, ref->desc, ref->node->debug_id);
-			binder_dec_ref(ref, fp->type == BINDER_TYPE_HANDLE);
+			binder_dec_ref(&ref, fp->type == BINDER_TYPE_HANDLE);
 		} break;
 
 		case BINDER_TYPE_FD:
@@ -1962,19 +1889,25 @@ int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,
 				break;
 			case BC_RELEASE:
 				debug_string = "Release";
-				binder_dec_ref(ref, 1);
+				binder_dec_ref(&ref, 1);
 				break;
 			case BC_DECREFS:
 			default:
 				debug_string = "DecRefs";
-				binder_dec_ref(ref, 0);
+				binder_dec_ref(&ref, 0);
 				break;
 			}
-			binder_debug(BINDER_DEBUG_USER_REFS,
-				     "binder: %d:%d %s ref %d desc %d s %d w %d for node %d\n",
-				     proc->pid, thread->pid, debug_string, ref->debug_id,
-				     ref->desc, ref->strong, ref->weak, ref->node->debug_id);
-			break;
+			if (ref == NULL) {
+				binder_debug(BINDER_DEBUG_USER_REFS,
+					"binder: %d:%d %s ref deleted",
+					proc->pid, thread->pid, debug_string);
+			} else {
+				binder_debug(BINDER_DEBUG_USER_REFS,
+					"binder: %d:%d %s ref %d desc %d s %d w %d for node %d\n",
+					proc->pid, thread->pid, debug_string, ref->debug_id,
+					ref->desc, ref->strong, ref->weak, ref->node->debug_id);
+			}
+      break;
 		}
 		case BC_INCREFS_DONE:
 		case BC_ACQUIRE_DONE: {
@@ -3069,7 +3002,9 @@ static int binder_mmap(struct file *filp, struct vm_area_struct *vma)
 	binder_insert_free_buffer(proc, buffer);
 	proc->free_async_space = proc->buffer_size / 2;
 	barrier();
+	mutex_lock(&proc->files_lock);
 	proc->files = get_files_struct(proc->tsk);
+	mutex_unlock(&proc->files_lock);
 	proc->vma = vma;
 	proc->vma_vm_mm = vma->vm_mm;
 
@@ -3108,6 +3043,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 		return -ENOMEM;
 	get_task_struct(current);
 	proc->tsk = current;
+	mutex_init(&proc->files_lock);
 	INIT_LIST_HEAD(&proc->todo);
 	init_waitqueue_head(&proc->wait);
 	proc->default_priority = task_nice(current);
@@ -3335,9 +3271,11 @@ static void binder_deferred_func(struct work_struct *work)
 
 		files = NULL;
 		if (defer & BINDER_DEFERRED_PUT_FILES) {
+			mutex_lock(&proc->files_lock);
 			files = proc->files;
 			if (files)
 				proc->files = NULL;
+			mutex_unlock(&proc->files_lock);
 		}
 
 		if (defer & BINDER_DEFERRED_FLUSH)

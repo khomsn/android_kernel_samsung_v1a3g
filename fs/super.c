@@ -302,7 +302,7 @@ static int grab_super(struct super_block *s) __releases(sb_lock)
 
 /*
  *	grab_super_passive - acquire a passive reference
- *	@s: reference we are trying to grab
+ *	@sb: reference we are trying to grab
  *
  *	Tries to acquire a passive reference. This is used in places where we
  *	cannot take an active reference but we need to ensure that the
@@ -783,12 +783,12 @@ int do_remount_sb(struct super_block *sb, int flags, void *data, int force)
 	return do_remount_sb2(NULL, sb, flags, data, force);
 }
 
-void do_emergency_remount(struct work_struct *work)
+static void do_emergency_remount(struct work_struct *work)
 {
 	struct super_block *sb, *p = NULL;
 
 	spin_lock(&sb_lock);
-	list_for_each_entry_reverse(sb, &super_blocks, s_list) {
+	list_for_each_entry(sb, &super_blocks, s_list) {
 		if (hlist_unhashed(&sb->s_instances))
 			continue;
 		sb->s_count++;

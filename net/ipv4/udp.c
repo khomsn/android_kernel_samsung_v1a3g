@@ -732,7 +732,7 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4)
 	if (is_udplite)  				 /*     UDP-Lite      */
 		csum = udplite_csum(skb);
 
-	else if (sk->sk_no_check == UDP_CSUM_NOXMIT) {   /* UDP csum disabled */
+	else if (sk->sk_no_check_tx && !skb_is_gso(skb)) {   /* UDP csum off */
 
 		skb->ip_summed = CHECKSUM_NONE;
 		goto send;
@@ -2176,26 +2176,16 @@ void __init udp_table_init(struct udp_table *table, const char *name)
 {
 	unsigned int i;
 
-	if (!CONFIG_BASE_SMALL)
-		table->hash = alloc_large_system_hash(name,
-			2 * sizeof(struct udp_hslot),
-			uhash_entries,
-			21, /* one slot per 2 MB */
-			0,
-			&table->log,
-			&table->mask,
-			64 * 1024);
-	/*
-	 * Make sure hash table has the minimum size
-	 */
-	if (CONFIG_BASE_SMALL || table->mask < UDP_HTABLE_SIZE_MIN - 1) {
-		table->hash = kmalloc(UDP_HTABLE_SIZE_MIN *
-				      2 * sizeof(struct udp_hslot), GFP_KERNEL);
-		if (!table->hash)
-			panic(name);
-		table->log = ilog2(UDP_HTABLE_SIZE_MIN);
-		table->mask = UDP_HTABLE_SIZE_MIN - 1;
-	}
+	table->hash = alloc_large_system_hash(name,
+					      2 * sizeof(struct udp_hslot),
+					      uhash_entries,
+					      21, /* one slot per 2 MB */
+					      0,
+					      &table->log,
+					      &table->mask,
+					      UDP_HTABLE_SIZE_MIN,
+					      64 * 1024);
+
 	table->hash2 = table->hash + (table->mask + 1);
 	for (i = 0; i <= table->mask; i++) {
 		INIT_HLIST_NULLS_HEAD(&table->hash[i].head, i);

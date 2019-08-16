@@ -1327,6 +1327,9 @@ static int register_queue_kobjects(struct net_device *net)
 error:
 	netdev_queue_update_kobjects(net, txq, 0);
 	net_rx_queue_update_kobjects(net, rxq, 0);
+#ifdef CONFIG_SYSFS
+	kset_unregister(net->queues_kset);
+#endif
 	return error;
 }
 
@@ -1476,14 +1479,18 @@ int netdev_register_kobject(struct net_device *net)
 
 	error = device_add(dev);
 	if (error)
-		return error;
+		goto error_put_device;
 
 	error = register_queue_kobjects(net);
-	if (error) {
-		device_del(dev);
-		return error;
-	}
+	if (error)
+		goto error_device_del;
 
+	return 0;
+
+error_device_del:
+	device_del(dev);
+error_put_device:
+	put_device(dev);
 	return error;
 }
 

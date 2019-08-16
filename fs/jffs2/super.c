@@ -47,7 +47,10 @@ static struct inode *jffs2_alloc_inode(struct super_block *sb)
 static void jffs2_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
-	kmem_cache_free(jffs2_inode_cachep, JFFS2_INODE_INFO(inode));
+	struct jffs2_inode_info *f = JFFS2_INODE_INFO(inode);
+
+	kfree(f->target);
+	kmem_cache_free(jffs2_inode_cachep, f);
 }
 
 static void jffs2_destroy_inode(struct inode *inode)
@@ -356,6 +359,7 @@ static struct file_system_type jffs2_fs_type = {
 	.mount =	jffs2_mount,
 	.kill_sb =	jffs2_kill_sb,
 };
+MODULE_ALIAS_FS("jffs2");
 
 static int __init init_jffs2_fs(void)
 {

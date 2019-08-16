@@ -3250,6 +3250,43 @@ void tcp_done(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(tcp_done);
 
+int tcp_abort(struct sock *sk, int err)
+{
+	if (sk->sk_state == TCP_TIME_WAIT) {
+		inet_twsk_put((struct inet_timewait_sock *)sk);
+		return -EOPNOTSUPP;
+	}
+
+	/* Don't race with userspace socket closes such as tcp_close. */
+	lock_sock(sk);
+
+	if (sk->sk_state == TCP_LISTEN) {
+		tcp_set_state(sk, TCP_CLOSE);
+		inet_csk_listen_stop(sk);
+	}
+
+	/* Don't race with BH socket closes such as inet_csk_listen_stop. */
+	local_bh_disable();
+	bh_lock_sock(sk);
+
+	if (!sock_flag(sk, SOCK_DEAD)) {
+		sk->sk_err = err;
+		/* This barrier is coupled with smp_rmb() in tcp_poll() */
+		smp_wmb();
+		sk->sk_error_report(sk);
+		if (tcp_need_reset(sk->sk_state))
+			tcp_send_active_reset(sk, GFP_ATOMIC);
+		tcp_done(sk);
+	}
+
+	bh_unlock_sock(sk);
+	local_bh_enable();
+	release_sock(sk);
+	sock_put(sk);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tcp_abort);
+
 extern struct tcp_congestion_ops tcp_reno;
 
 static __initdata unsigned long thash_entries;
@@ -3279,6 +3316,7 @@ void __init tcp_init(void)
 	unsigned int i;
 	unsigned long jiffy = jiffies;
 
+	BUILD_BUG_ON(TCP_MIN_SND_MSS <= MAX_TCP_OPTION_SPACE);
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) > sizeof(skb->cb));
 
 	percpu_counter_init(&tcp_sockets_allocated, 0);
@@ -3302,6 +3340,7 @@ void __init tcp_init(void)
 					0,
 					NULL,
 					&tcp_hashinfo.ehash_mask,
+					0,
 					thash_entries ? 0 : 512 * 1024);
 	for (i = 0; i <= tcp_hashinfo.ehash_mask; i++) {
 		INIT_HLIST_NULLS_HEAD(&tcp_hashinfo.ehash[i].chain, i);
@@ -3318,6 +3357,7 @@ void __init tcp_init(void)
 					0,
 					&tcp_hashinfo.bhash_size,
 					NULL,
+					0,
 					64 * 1024);
 	tcp_hashinfo.bhash_size = 1U << tcp_hashinfo.bhash_size;
 	for (i = 0; i < tcp_hashinfo.bhash_size; i++) {

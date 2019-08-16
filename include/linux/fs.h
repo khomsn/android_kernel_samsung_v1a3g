@@ -349,8 +349,6 @@ struct inodes_stat_t {
 #define FITRIM		_IOWR('X', 121, struct fstrim_range)	/* Trim */
 #define FS_IOC_SHUTDOWN	_IOR('X', 125, __u32)	/* Shutdown */
 
-#define FIDTRIM	_IOWR('f', 128, struct fstrim_range)	/* Deep discard trim */
-
 #define	FS_IOC_GETFLAGS			_IOR('f', 1, long)
 #define	FS_IOC_SETFLAGS			_IOW('f', 2, long)
 #define	FS_IOC_GETVERSION		_IOR('v', 1, long)
@@ -1938,6 +1936,8 @@ struct file_system_type {
 	struct lock_class_key i_mutex_dir_key;
 };
 
+#define MODULE_ALIAS_FS(NAME) MODULE_ALIAS("fs-" NAME)
+
 extern struct dentry *mount_ns(struct file_system_type *fs_type, int flags,
 	void *data, int (*fill_super)(struct super_block *, void *, int));
 extern struct dentry *mount_bdev(struct file_system_type *fs_type,
@@ -2366,9 +2366,6 @@ static inline void i_readcount_inc(struct inode *inode)
 }
 #endif
 extern int do_pipe_flags(int *, int);
-extern struct file *create_read_pipe(struct file *f, int flags);
-extern struct file *create_write_pipe(int flags);
-extern void free_write_pipe(struct file *);
 
 extern int kernel_read(struct file *, loff_t, char *, unsigned long);
 extern struct file * open_exec(const char *);

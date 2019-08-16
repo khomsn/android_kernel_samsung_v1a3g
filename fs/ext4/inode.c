@@ -341,9 +341,9 @@ static int __check_block_validity(struct inode *inode, const char *func,
 						0, EXT4_INODE_SIZE(inode->i_sb));
 		/* for debugging */
 		ext4_error_inode(inode, func, line, map->m_pblk,
-				 "lblock %lu mapped to illegal pblock "
+				 "lblock %lu mapped to illegal pblock %llu"
 				 "(length %d)", (unsigned long) map->m_lblk,
-				 map->m_len);
+				 map->m_pblk, map->m_len);
 		return -EIO;
 	}
 	return 0;
@@ -3498,7 +3498,8 @@ static int __ext4_get_inode_loc(struct inode *inode,
 	int			inodes_per_block, inode_offset;
 
 	iloc->bh = NULL;
-	if (!ext4_valid_inum(sb, inode->i_ino))
+	if (inode->i_ino < EXT4_ROOT_INO ||
+	    inode->i_ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
 		return -EIO;
 
 	iloc->block_group = (inode->i_ino - 1) / EXT4_INODES_PER_GROUP(sb);
@@ -3827,7 +3828,9 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 			__le32 *magic = (void *)raw_inode +
 					EXT4_GOOD_OLD_INODE_SIZE +
 					ei->i_extra_isize;
-			if (*magic == cpu_to_le32(EXT4_XATTR_MAGIC))
+			if (EXT4_GOOD_OLD_INODE_SIZE + ei->i_extra_isize +
+				sizeof(__le32) <= EXT4_INODE_SIZE(inode->i_sb) &&
+			    *magic == cpu_to_le32(EXT4_XATTR_MAGIC))
 				ext4_set_inode_state(inode, EXT4_STATE_XATTR);
 		}
 	} else
@@ -4132,12 +4135,7 @@ int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 			return -EIO;
 		}
 
-		/*
-		 * No need to force transaction in WB_SYNC_NONE mode. Also
-		 * ext4_sync_fs() will force the commit after everything is
-		 * written.
-		 */
-		if (wbc->sync_mode != WB_SYNC_ALL || wbc->for_sync)
+		if (wbc->sync_mode != WB_SYNC_ALL)
 			return 0;
 
 		err = ext4_force_commit(inode->i_sb);
@@ -4147,11 +4145,7 @@ int ext4_write_inode(struct inode *inode, struct writeback_control *wbc)
 		err = __ext4_get_inode_loc(inode, &iloc, 0);
 		if (err)
 			return err;
-		/*
-		 * sync(2) will flush the whole buffer cache. No need to do
-		 * it here separately for each inode.
-		 */
-		if (wbc->sync_mode == WB_SYNC_ALL && !wbc->for_sync)
+		if (wbc->sync_mode == WB_SYNC_ALL)
 			sync_dirty_buffer(iloc.bh);
 		if (buffer_req(iloc.bh) && !buffer_uptodate(iloc.bh)) {
 			EXT4_ERROR_INODE_BLOCK(inode, iloc.bh->b_blocknr,
