@@ -992,6 +992,7 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 			unsigned long next, now = jiffies;
 
 			atomic_set(&neigh->probes, neigh->parms->ucast_probes);
+			neigh_del_timer(neigh);
 			neigh->nud_state     = NUD_INCOMPLETE;
 			neigh->updated = now;
 			next = now + max(neigh->parms->retrans_time, HZ/2);
@@ -1007,6 +1008,7 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 		}
 	} else if (neigh->nud_state & NUD_STALE) {
 		NEIGH_PRINTK2("neigh %p is delayed.\n", neigh);
+		neigh_del_timer(neigh);
 		neigh->nud_state = NUD_DELAY;
 		neigh->updated = jiffies;
 		neigh_add_timer(neigh,
@@ -1840,8 +1842,8 @@ static int neightbl_fill_info(struct sk_buff *skb, struct neigh_table *tbl,
 
 	{
 		unsigned long now = jiffies;
-		unsigned int flush_delta = now - tbl->last_flush;
-		unsigned int rand_delta = now - tbl->last_rand;
+		long flush_delta = now - tbl->last_flush;
+		long rand_delta = now - tbl->last_rand;
 		struct neigh_hash_table *nht;
 		struct ndt_config ndc = {
 			.ndtc_key_len		= tbl->key_len,

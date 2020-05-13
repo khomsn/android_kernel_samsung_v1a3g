@@ -1510,19 +1510,34 @@ static void pci_pme_list_scan(struct work_struct *work)
 	struct pci_pme_device *pme_dev, *n;
 
 	mutex_lock(&pci_pme_list_mutex);
-	if (!list_empty(&pci_pme_list)) {
-		list_for_each_entry_safe(pme_dev, n, &pci_pme_list, list) {
-			if (pme_dev->dev->pme_poll) {
-				pci_pme_wakeup(pme_dev->dev, NULL);
-			} else {
-				list_del(&pme_dev->list);
-				kfree(pme_dev);
-			}
+	list_for_each_entry_safe(pme_dev, n, &pci_pme_list, list) {
+		if (pme_dev->dev->pme_poll) {
+			struct pci_dev *bridge;
+
+			bridge = pme_dev->dev->bus->self;
+			/*
+			 * If bridge is in low power state, the
+			 * configuration space of subordinate devices
+			 * may be not accessible
+			 */
+			if (bridge && bridge->current_state != PCI_D0)
+				continue;
+			/*
+			 * If the device is in D3cold it should not be
+			 * polled either.
+			 */
+			if (pme_dev->dev->current_state == PCI_D3cold)
+				continue;
+
+			pci_pme_wakeup(pme_dev->dev, NULL);
+		} else {
+			list_del(&pme_dev->list);
+			kfree(pme_dev);
 		}
-		if (!list_empty(&pci_pme_list))
-			schedule_delayed_work(&pci_pme_work,
-					      msecs_to_jiffies(PME_TIMEOUT));
 	}
+	if (!list_empty(&pci_pme_list))
+		queue_delayed_work(system_freezable_wq, &pci_pme_work,
+				   msecs_to_jiffies(PME_TIMEOUT));
 	mutex_unlock(&pci_pme_list_mutex);
 }
 
@@ -1570,8 +1585,9 @@ void pci_pme_active(struct pci_dev *dev, bool enable)
 			mutex_lock(&pci_pme_list_mutex);
 			list_add(&pme_dev->list, &pci_pme_list);
 			if (list_is_singular(&pci_pme_list))
-				schedule_delayed_work(&pci_pme_work,
-						      msecs_to_jiffies(PME_TIMEOUT));
+				queue_delayed_work(system_freezable_wq,
+						   &pci_pme_work,
+						   msecs_to_jiffies(PME_TIMEOUT));
 			mutex_unlock(&pci_pme_list_mutex);
 		} else {
 			mutex_lock(&pci_pme_list_mutex);
@@ -1802,6 +1818,10 @@ bool pci_dev_run_wake(struct pci_dev *dev)
 		return true;
 
 	if (!dev->pme_support)
+		return false;
+
+	/* PME-capable in principle, but not from the intended sleep state */
+	if (!pci_pme_capable(dev, pci_target_state(dev)))
 		return false;
 
 	while (bus->parent) {

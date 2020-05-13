@@ -479,8 +479,8 @@ static sec_bat_adc_region_t cable_adc_value_table[] = {
 static int polling_time_table[] = {
 	10,	/* BASIC */
 	30,	/* CHARGING */
-	30,	/* DISCHARGING */
-	30,	/* NOT_CHARGING */
+	60,	/* DISCHARGING */
+	300,	/* NOT_CHARGING */
 	3600,	/* SLEEP */
 };
 
@@ -488,7 +488,7 @@ static int polling_time_table[] = {
 static struct battery_data_t adonis_battery_data[] = {
 	/* SDI battery data */
 	{
-		.Capacity = 0x4A8E,
+		.Charge_Capacity = 0x4A8E,
 		.low_battery_comp_voltage = 3600,
 		.low_battery_table = {
 			/* range, slope, offset */
@@ -517,13 +517,13 @@ static void sec_bat_check_batt_id(void)
 	/* SDI: +/-700, ATL: +2000 */
 	if (ret > 1700) {
 		sec_battery_pdata.vendor = "ATL ATL";
-		adonis_battery_data[0].Capacity = 0x4958;
+		adonis_battery_data[0].Charge_Capacity = 0x4958;
 		adonis_battery_data[0].type_str = "ATL";
 	}
 
 	pr_err("%s: batt_type(%s), batt_id(%d), cap(0x%x), type(%s)\n",
 		__func__, sec_battery_pdata.vendor, ret,
-		adonis_battery_data[0].Capacity, adonis_battery_data[0].type_str);
+		adonis_battery_data[0].Charge_Capacity, adonis_battery_data[0].type_str);
 }
 
 sec_battery_platform_data_t sec_battery_pdata = {

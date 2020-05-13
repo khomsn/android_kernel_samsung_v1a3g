@@ -191,7 +191,12 @@ static unsigned long __initdata new_log_buf_len;
 /* save requested log_buf_len since it's too early to process it */
 static int __init log_buf_len_setup(char *str)
 {
-	unsigned size = memparse(str, &str);
+	unsigned int size;
+
+	if (!str)
+		return -EINVAL;
+
+	size = memparse(str, &str);
 
 	if (size)
 		size = roundup_pow_of_two(size);
@@ -207,7 +212,7 @@ void __init setup_log_buf(int early)
 	unsigned long flags;
 	unsigned start, dest_idx, offset;
 	char *new_log_buf;
-	int free;
+	unsigned int free;
 
 	if (!new_log_buf_len)
 		return;

@@ -9435,3 +9435,8 @@ void dhd_sdio_reg_write(void *h, uint32 addr, uint32 val)
 	dhd_os_sdunlock(bus->dhd);
 }
 #endif /* DEBUGGER */
+
+void
+dhd_bus_set_drive_strength(dhd_pub_t *dhdp, uint drive_strength) {
+	si_sdiod_drive_strength_init(dhdp->bus->sih, dhdp->bus->dhd->osh, drive_strength);
+}

@@ -70,6 +70,36 @@ static int get_rdev_dev_by_ifindex(struct net *netns, struct nlattr **attrs,
 	return 0;
 }
 
+static int validate_beacon_head(const struct nlattr *attr)
+{
+	const u8 *data = nla_data(attr);
+	unsigned int len = nla_len(attr);
+	const struct element *elem;
+	const struct ieee80211_mgmt *mgmt = (void *)data;
+	unsigned int fixedlen = offsetof(struct ieee80211_mgmt,
+					 u.beacon.variable);
+
+	if (len < fixedlen)
+		goto err;
+
+	if (ieee80211_hdrlen(mgmt->frame_control) !=
+	    offsetof(struct ieee80211_mgmt, u.beacon))
+		goto err;
+
+	data += fixedlen;
+	len -= fixedlen;
+
+	for_each_element(elem, data, len) {
+		/* nothing */
+	}
+
+	if (for_each_element_completed(elem, data, len))
+		return 0;
+
+err:
+	return -EINVAL;
+}
+
 /* policy for the attributes */
 static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
 	[NL80211_ATTR_WIPHY] = { .type = NLA_U32 },
@@ -116,7 +146,8 @@ static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
 	[NL80211_ATTR_MNTR_FLAGS] = { /* NLA_NESTED can't be empty */ },
 	[NL80211_ATTR_MESH_ID] = { .type = NLA_BINARY,
 				.len = IEEE80211_MAX_MESH_ID_LEN },
-	[NL80211_ATTR_MPATH_NEXT_HOP] = { .type = NLA_U32 },
+	[NL80211_ATTR_MPATH_NEXT_HOP] = { .type = NLA_BINARY,
+					  .len = ETH_ALEN },
 
 	[NL80211_ATTR_REG_ALPHA2] = { .type = NLA_STRING, .len = 2 },
 	[NL80211_ATTR_REG_RULES] = { .type = NLA_NESTED },
@@ -153,6 +184,7 @@ static const struct nla_policy nl80211_policy[NL80211_ATTR_MAX+1] = {
 	[NL80211_ATTR_CONTROL_PORT_ETHERTYPE] = { .type = NLA_U16 },
 	[NL80211_ATTR_CONTROL_PORT_NO_ENCRYPT] = { .type = NLA_FLAG },
 	[NL80211_ATTR_PRIVACY] = { .type = NLA_FLAG },
+	[NL80211_ATTR_STATUS_CODE] = { .type = NLA_U16 },
 	[NL80211_ATTR_CIPHER_SUITE_GROUP] = { .type = NLA_U32 },
 	[NL80211_ATTR_WPA_VERSIONS] = { .type = NLA_U32 },
 	[NL80211_ATTR_PID] = { .type = NLA_U32 },
@@ -2087,61 +2119,63 @@ static int nl80211_del_key(struct sk_buff *skb, struct genl_info *info)
 	return err;
 }
 
-static int nl80211_parse_beacon(struct genl_info *info,
+static int nl80211_parse_beacon(struct nlattr *attrs[],
 				struct cfg80211_beacon_data *bcn)
 {
 	bool haveinfo = false;
 
-	if (!is_valid_ie_attr(info->attrs[NL80211_ATTR_BEACON_TAIL]) ||
-	    !is_valid_ie_attr(info->attrs[NL80211_ATTR_IE]) ||
-	    !is_valid_ie_attr(info->attrs[NL80211_ATTR_IE_PROBE_RESP]) ||
-	    !is_valid_ie_attr(info->attrs[NL80211_ATTR_IE_ASSOC_RESP]))
+	if (!is_valid_ie_attr(attrs[NL80211_ATTR_BEACON_TAIL]) ||
+	    !is_valid_ie_attr(attrs[NL80211_ATTR_IE]) ||
+	    !is_valid_ie_attr(attrs[NL80211_ATTR_IE_PROBE_RESP]) ||
+	    !is_valid_ie_attr(attrs[NL80211_ATTR_IE_ASSOC_RESP]))
 		return -EINVAL;
 
 	memset(bcn, 0, sizeof(*bcn));
 
-	if (info->attrs[NL80211_ATTR_BEACON_HEAD]) {
-		bcn->head = nla_data(info->attrs[NL80211_ATTR_BEACON_HEAD]);
-		bcn->head_len = nla_len(info->attrs[NL80211_ATTR_BEACON_HEAD]);
+	if (attrs[NL80211_ATTR_BEACON_HEAD]) {
+		int ret = validate_beacon_head(attrs[NL80211_ATTR_BEACON_HEAD]);
+
+		if (ret)
+			return ret;
+
+		bcn->head = nla_data(attrs[NL80211_ATTR_BEACON_HEAD]);
+		bcn->head_len = nla_len(attrs[NL80211_ATTR_BEACON_HEAD]);
 		if (!bcn->head_len)
 			return -EINVAL;
 		haveinfo = true;
 	}
 
-	if (info->attrs[NL80211_ATTR_BEACON_TAIL]) {
-		bcn->tail = nla_data(info->attrs[NL80211_ATTR_BEACON_TAIL]);
-		bcn->tail_len =
-		    nla_len(info->attrs[NL80211_ATTR_BEACON_TAIL]);
+	if (attrs[NL80211_ATTR_BEACON_TAIL]) {
+		bcn->tail = nla_data(attrs[NL80211_ATTR_BEACON_TAIL]);
+		bcn->tail_len = nla_len(attrs[NL80211_ATTR_BEACON_TAIL]);
 		haveinfo = true;
 	}
 
 	if (!haveinfo)
 		return -EINVAL;
 
-	if (info->attrs[NL80211_ATTR_IE]) {
-		bcn->beacon_ies = nla_data(info->attrs[NL80211_ATTR_IE]);
-		bcn->beacon_ies_len = nla_len(info->attrs[NL80211_ATTR_IE]);
+	if (attrs[NL80211_ATTR_IE]) {
+		bcn->beacon_ies = nla_data(attrs[NL80211_ATTR_IE]);
+		bcn->beacon_ies_len = nla_len(attrs[NL80211_ATTR_IE]);
 	}
 
-	if (info->attrs[NL80211_ATTR_IE_PROBE_RESP]) {
+	if (attrs[NL80211_ATTR_IE_PROBE_RESP]) {
 		bcn->proberesp_ies =
-			nla_data(info->attrs[NL80211_ATTR_IE_PROBE_RESP]);
+			nla_data(attrs[NL80211_ATTR_IE_PROBE_RESP]);
 		bcn->proberesp_ies_len =
-			nla_len(info->attrs[NL80211_ATTR_IE_PROBE_RESP]);
+			nla_len(attrs[NL80211_ATTR_IE_PROBE_RESP]);
 	}
 
-	if (info->attrs[NL80211_ATTR_IE_ASSOC_RESP]) {
+	if (attrs[NL80211_ATTR_IE_ASSOC_RESP]) {
 		bcn->assocresp_ies =
-			nla_data(info->attrs[NL80211_ATTR_IE_ASSOC_RESP]);
+			nla_data(attrs[NL80211_ATTR_IE_ASSOC_RESP]);
 		bcn->assocresp_ies_len =
-			nla_len(info->attrs[NL80211_ATTR_IE_ASSOC_RESP]);
+			nla_len(attrs[NL80211_ATTR_IE_ASSOC_RESP]);
 	}
 
-	if (info->attrs[NL80211_ATTR_PROBE_RESP]) {
-		bcn->probe_resp =
-			nla_data(info->attrs[NL80211_ATTR_PROBE_RESP]);
-		bcn->probe_resp_len =
-			nla_len(info->attrs[NL80211_ATTR_PROBE_RESP]);
+	if (attrs[NL80211_ATTR_PROBE_RESP]) {
+		bcn->probe_resp = nla_data(attrs[NL80211_ATTR_PROBE_RESP]);
+		bcn->probe_resp_len = nla_len(attrs[NL80211_ATTR_PROBE_RESP]);
 	}
 
 	return 0;
@@ -2173,7 +2207,7 @@ static int nl80211_start_ap(struct sk_buff *skb, struct genl_info *info)
 	    !info->attrs[NL80211_ATTR_BEACON_HEAD])
 		return -EINVAL;
 
-	err = nl80211_parse_beacon(info, &params.beacon);
+	err = nl80211_parse_beacon(info->attrs, &params.beacon);
 	if (err)
 		return err;
 
@@ -2257,7 +2291,7 @@ static int nl80211_set_beacon(struct sk_buff *skb, struct genl_info *info)
 	if (!wdev->beacon_interval)
 		return -EINVAL;
 
-	err = nl80211_parse_beacon(info, &params);
+	err = nl80211_parse_beacon(info->attrs, &params);
 	if (err)
 		return err;
 
@@ -3122,6 +3156,9 @@ static int nl80211_del_mpath(struct sk_buff *skb, struct genl_info *info)
 		dst = nla_data(info->attrs[NL80211_ATTR_MAC]);
 
 	if (!rdev->ops->del_mpath)
+		return -EOPNOTSUPP;
+
+	if (dev->ieee80211_ptr->iftype != NL80211_IFTYPE_MESH_POINT)
 		return -EOPNOTSUPP;
 
 	return rdev->ops->del_mpath(&rdev->wiphy, dev, dst);

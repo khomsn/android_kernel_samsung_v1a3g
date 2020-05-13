@@ -25,9 +25,6 @@
  *
  *  NOTES:
  *
- *   - async unlink should be used for avoiding the sleep inside lock.
- *     2.4.22 usb-uhci seems buggy for async unlinking and results in
- *     oops.  in such a cse, pass async_unlink=0 option.
  *   - the linked URBs would be preferred but not used so far because of
  *     the instability of unlinking.
  *   - type II is not supported properly.  there is no device which supports
@@ -83,7 +80,6 @@ static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;/* Enable this card *
 static int vid[SNDRV_CARDS] = { [0 ... (SNDRV_CARDS-1)] = -1 };
 static int pid[SNDRV_CARDS] = { [0 ... (SNDRV_CARDS-1)] = -1 };
 static int nrpacks = 8;		/* max. number of packets per urb */
-static bool async_unlink = 1;
 static int device_setup[SNDRV_CARDS]; /* device parameter for this card */
 static bool ignore_ctl_error;
 
@@ -99,8 +95,6 @@ module_param_array(pid, int, NULL, 0444);
 MODULE_PARM_DESC(pid, "Product ID for the USB audio device.");
 module_param(nrpacks, int, 0644);
 MODULE_PARM_DESC(nrpacks, "Max. number of packets per URB.");
-module_param(async_unlink, bool, 0444);
-MODULE_PARM_DESC(async_unlink, "Use async unlink mode.");
 module_param_array(device_setup, int, NULL, 0444);
 MODULE_PARM_DESC(device_setup, "Specific device setup (if needed).");
 module_param(ignore_ctl_error, bool, 0444);
@@ -207,7 +201,6 @@ static int snd_usb_create_stream(struct snd_usb_audio *chip, int ctrlif, int int
 	if (! snd_usb_parse_audio_interface(chip, interface)) {
 		usb_set_interface(dev, interface, 0); /* reset the current interface */
 		usb_driver_claim_interface(&usb_audio_driver, iface, (void *)-1L);
-		return -EINVAL;
 	}
 
 	return 0;
@@ -285,6 +278,21 @@ static int snd_usb_create_streams(struct snd_usb_audio *chip, int ctrlif)
 	case UAC_VERSION_2: {
 		struct usb_interface_assoc_descriptor *assoc =
 			usb_ifnum_to_if(dev, ctrlif)->intf_assoc;
+
+		if (!assoc) {
+			/*
+			 * Firmware writers cannot count to three.  So to find
+			 * the IAD on the NuForce UDH-100, also check the next
+			 * interface.
+			 */
+			struct usb_interface *iface =
+				usb_ifnum_to_if(dev, ctrlif + 1);
+			if (iface &&
+			    iface->intf_assoc &&
+			    iface->intf_assoc->bFunctionClass == USB_CLASS_AUDIO &&
+			    iface->intf_assoc->bFunctionProtocol == UAC_VERSION_2)
+				assoc = iface->intf_assoc;
+		}
 
 		if (!assoc) {
 			snd_printk(KERN_ERR "Audio class v2 interfaces need an interface association\n");
@@ -380,7 +388,6 @@ static int snd_usb_audio_create(struct usb_device *dev, int idx,
 	chip->card = card;
 	chip->setup = device_setup[idx];
 	chip->nrpacks = nrpacks;
-	chip->async_unlink = async_unlink;
 	chip->probing = 1;
 
 	chip->usb_id = USB_ID(le16_to_cpu(dev->descriptor.idVendor),
@@ -570,9 +577,12 @@ snd_usb_audio_probe(struct usb_device *dev,
 
  __error:
 	if (chip) {
+		/* chip->probing is inside the chip->card object,
+		 * reset before memory is possibly returned.
+		 */
+		chip->probing = 0;
 		if (!chip->num_interfaces)
 			snd_card_free(chip->card);
-		chip->probing = 0;
 	}
 	mutex_unlock(&register_mutex);
  __err_val:
@@ -654,7 +664,7 @@ int snd_usb_autoresume(struct snd_usb_audio *chip)
 	int err = -ENODEV;
 
 	down_read(&chip->shutdown_rwsem);
-	if (chip->probing)
+	if (chip->probing || chip->in_pm)
 		err = 0;
 	else if (!chip->shutdown)
 		err = usb_autopm_get_interface(chip->pm_intf);
@@ -666,7 +676,7 @@ int snd_usb_autoresume(struct snd_usb_audio *chip)
 void snd_usb_autosuspend(struct snd_usb_audio *chip)
 {
 	down_read(&chip->shutdown_rwsem);
-	if (!chip->shutdown && !chip->probing)
+	if (!chip->shutdown && !chip->probing && !chip->in_pm)
 		usb_autopm_put_interface(chip->pm_intf);
 	up_read(&chip->shutdown_rwsem);
 }
@@ -714,6 +724,8 @@ static int usb_audio_resume(struct usb_interface *intf)
 		return 0;
 	if (--chip->num_suspended_intf)
 		return 0;
+
+	chip->in_pm = 1;
 	/*
 	 * ALSA leaves material resumption to user space
 	 * we just notify and restart the mixers
@@ -729,6 +741,7 @@ static int usb_audio_resume(struct usb_interface *intf)
 	chip->autosuspended = 0;
 
 err_out:
+	chip->in_pm = 0;
 	return err;
 }
 #else

@@ -665,7 +665,7 @@ uint dhd_intr = TRUE;
 module_param(dhd_intr, uint, 0);
 
 /* SDIO Drive Strength (in milliamps) */
-uint dhd_sdiod_drive_strength = 6;
+uint dhd_sdiod_drive_strength = 4;
 module_param(dhd_sdiod_drive_strength, uint, 0);
 
 /* Tx/Rx bounds */
@@ -4790,8 +4790,9 @@ dhd_get_concurrent_capabilites(dhd_pub_t *dhd)
 	}
 	return 0;
 }
-#endif 
+#endif
 
+extern void dhd_bus_set_drive_strength(dhd_pub_t *dhdp, uint drive_strength);
 
 int
 dhd_preinit_ioctls(dhd_pub_t *dhd)
@@ -5692,6 +5693,7 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 	dhd_interworking_enable(dhd);
 #endif /* WL11U */
 
+	dhd_bus_set_drive_strength(dhd, dhd_sdiod_drive_strength);
 done:
 	return ret;
 }

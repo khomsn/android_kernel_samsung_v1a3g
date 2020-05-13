@@ -98,7 +98,7 @@ static int drc1_ng_ena;
 static int drc1l_ena;
 static int drc1r_ena;
 
-static unsigned int drc1_sw_values[] = {
+static int drc1_sw_values[] = {
      0, 1
 };
 
@@ -106,7 +106,7 @@ const char *drc1_sw_text[] = {
 	"OFF", "ON"
 };
 
-static unsigned int drc1_atk_values[] = {
+static int drc1_atk_values[] = {
      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 };
 
@@ -114,7 +114,7 @@ const char *drc1_atk_text[] = {
 	"181us", "363us", "726us", "1.45ms", "2.9ms", "5.8ms", "11.6ms", "23.2ms", "46.4ms", "92.8ms", "185.6ms"
 };
 
-static unsigned int drc1_dcy_values[] = {
+static int drc1_dcy_values[] = {
      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 };
 
@@ -122,7 +122,7 @@ const char *drc1_dcy_text[] = {
 	"1.45ms", "2.9ms", "5.8ms", "11.6ms", "23.25ms", "46.5ms", "93ms", "186ms", "372ms", "743ms", "1.49s", "2.97s" 
 };
 
-static unsigned int drc1_mingain_values[] = {
+static int drc1_mingain_values[] = {
     0, 1, 2, 3, 4
 };
 
@@ -130,7 +130,7 @@ const char *drc1_mingain_text[] = {
 	"0dB", "-12dB", "-18dB", "-24dB", "-36dB"
 };
 
-static unsigned int drc1_maxgain_values[] = {
+static int drc1_maxgain_values[] = {
     0, 1, 2, 3
 };
 
@@ -138,7 +138,7 @@ const char *drc1_maxgain_text[] = {
 	"12dB", "18dB", "24dB", "36dB"
 };
 
-static unsigned int drc1_ng_mingain_values[] = {
+static int drc1_ng_mingain_values[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 };
 
@@ -146,7 +146,7 @@ const char *drc1_ng_mingain_text[] = {
 	"-36dB", "-30dB", "-24dB", "-18dB", "-12dB", "-6dB", "0dB", "6dB", "12dB", "18dB", "24dB", "30dB", "36dB"
 };
 
-static unsigned int drc1_qr_thr_values[] = {
+static int drc1_qr_thr_values[] = {
     0, 1, 2, 3
 };
 
@@ -154,7 +154,7 @@ const char *drc1_qr_thr_text[] = {
 	"12dB", "18dB", "24dB", "30dB"
 };
 
-static unsigned int drc1_qr_dcy_values[] = {
+static int drc1_qr_dcy_values[] = {
     0, 1, 2
 };
 
@@ -162,7 +162,7 @@ const char *drc1_qr_dcy_text[] = {
 	"0.725ms", "1.45ms", "5.8ms"
 };
 
-static unsigned int drc1_knee_ip_values[] = {
+static int drc1_knee_ip_values[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60
 };
 
@@ -170,7 +170,7 @@ const char *drc1_knee_ip_text[] = {
 	"0dB", "-0.75dB", "-1.5dB", "-2.25dB", "-3dB", "-3.75dB", "-4.5dB", "-5.25dB", "-6dB", "-6.75dB", "-7.5dB", "-8.25dB", "-9dB", "-9.75dB", "-10.5dB", "-11.25dB", "-12dB", "-12.75dB", "-13.5dB", "-14.25dB", "-15dB", "-15.75dB", "-16.5dB", "-17.25dB", "-18dB", "-18.75dB", "-19.5dB", "-20.25dB", "-21dB", "-21.75dB", "-22.5dB", "-23.25dB", "-24dB", "-24.75dB", "-25.5dB", "-26.25dB", "-27dB", "-27.75dB", "-28.5dB", "-29.25dB", "-30dB", "-30.75dB", "-31.5dB", "-32.25dB", "-33dB", "-33.75dB", "-34.5dB", "-35.25dB", "-36dB", "-36.75dB", "-37.5dB", "-38.25dB", "-39dB", "-39.75dB", "-40.5dB", "-41.25dB", "-42dB", "-42.75dB", "-43.5dB", "-44.25dB", "-45dB"
 };
 
-static unsigned int drc1_knee_op_values[] = {
+static int drc1_knee_op_values[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
 };
 
@@ -178,7 +178,7 @@ const char *drc1_knee_op_text[] = {
 	"0dB", "-0.75dB", "-1.5dB", "-2.25dB", "-3dB", "-3.75dB", "-4.5dB", "-5.25dB", "-6dB", "-6.75dB", "-7.5dB", "-8.25dB", "-9dB", "-9.75dB", "-10.5dB", "-11.25dB", "-12dB", "-12.75dB", "-13.5dB", "-14.25dB", "-15dB", "-15.75dB", "-16.5dB", "-17.25dB", "-18dB", "-18.75dB", "-19.5dB", "-20.25dB", "-21dB", "-21.75dB", "-22.5dB"
 };
 
-static unsigned int drc1_hi_comp_values[] = {
+static int drc1_hi_comp_values[] = {
     0, 1, 2, 3, 4, 5
 };
 
@@ -186,7 +186,7 @@ const char *drc1_hi_comp_text[] = {
 	"1x", "x/2", "x/4", "x/8", "x/16", "0x"
 };
 
-static unsigned int drc1_lo_comp_values[] = {
+static int drc1_lo_comp_values[] = {
     0, 1, 2, 3, 4
 };
 
@@ -194,7 +194,7 @@ const char *drc1_lo_comp_text[] = {
 	"1x", "x/2", "x/4", "x/8", "0x"
 };
 
-static unsigned int drc1_knee2_ip_values[] = {
+static int drc1_knee2_ip_values[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
 };
 
@@ -202,7 +202,7 @@ const char *drc1_knee2_ip_text[] = {
 	"-30dB", "-31.5dB", "-33dB", "-34.5dB", "-36dB", "-37.5dB", "-39dB", "-40.5dB", "-42dB", "-43.5dB", "-45dB", "-46.5dB", "-48dB", "-49.5dB", "-51dB", "-52.5dB", "-54dB", "-55.5dB", "-57dB", "-58.5dB", "-60dB", "-61.5dB", "-63dB", "-64.5dB", "-66dB", "-67.5dB", "-69dB", "-70.5dB", "-72dB", "-73.5dB", "-75dB", "-76.5dB", "-78dB", "-79.5dB", "-81dB", "-82.5dB"
 };
 
-static unsigned int drc1_knee2_op_values[] = {
+static int drc1_knee2_op_values[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
 };
 
@@ -210,7 +210,7 @@ const char *drc1_knee2_op_text[] = {
 	"-30dB", "-31.5dB", "-33dB", "-34.5dB", "-36dB", "-37.5dB", "-39dB", "-40.5dB", "-42dB", "-43.5dB", "-45dB", "-46.5dB", "-48dB", "-49.5dB", "-51dB", "-52.5dB", "-54dB", "-55.5dB", "-57dB", "-58.5dB", "-60dB", "-61.5dB", "-63dB", "-64.5dB", "-66dB", "-67.5dB", "-69dB", "-70.5dB", "-72dB", "-73.5dB", "-75dB", "-76.5dB"
 };
 
-static unsigned int drc1_ng_exp_values[] = {
+static int drc1_ng_exp_values[] = {
 	0, 1, 2, 3
 };
 
@@ -1013,29 +1013,6 @@ static int set_drc1_knee_op(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int get_drc1_hi_comp(struct snd_kcontrol *kcontrol,
-	struct snd_ctl_elem_value *ucontrol)
-{
-	ucontrol->value.integer.value[0] = drc1_hi_comp;
-	return 0;
-}
-
-static int set_drc1_hi_comp(struct snd_kcontrol *kcontrol,
-	struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-	struct regmap *regmap = codec->control_data;
-
-	drc1_hi_comp = ucontrol->value.integer.value[0];
-
-	dev_info(codec->dev, "%s: drc1_hi_comp mode=%d, val=0x%x\n", __func__,
-				drc1_hi_comp, drc1_hi_comp_values[drc1_hi_comp]);
-
-	regmap_update_bits(regmap, ARIZONA_DRC1_CTRL3, ARIZONA_DRC1_HI_COMP_MASK,
-			drc1_hi_comp_values[drc1_hi_comp]);
-	return 0;
-}
-
 static int get_drc1_lo_comp(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
@@ -1056,6 +1033,29 @@ static int set_drc1_lo_comp(struct snd_kcontrol *kcontrol,
 
 	regmap_update_bits(regmap, ARIZONA_DRC1_CTRL3, ARIZONA_DRC1_LO_COMP_MASK,
 			drc1_lo_comp_values[drc1_lo_comp]);
+	return 0;
+}
+
+static int get_drc1_hi_comp(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = drc1_hi_comp;
+	return 0;
+}
+
+static int set_drc1_hi_comp(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	struct regmap *regmap = codec->control_data;
+
+	drc1_hi_comp = ucontrol->value.integer.value[0];
+
+	dev_info(codec->dev, "%s: drc1_hi_comp mode=%d, val=0x%x\n", __func__,
+				drc1_hi_comp, drc1_hi_comp_values[drc1_hi_comp]);
+
+	regmap_update_bits(regmap, ARIZONA_DRC1_CTRL3, ARIZONA_DRC1_HI_COMP_MASK,
+			drc1_hi_comp_values[drc1_hi_comp]);
 	return 0;
 }
 
@@ -1127,7 +1127,6 @@ static int set_drc1_ng_exp(struct snd_kcontrol *kcontrol,
 			drc1_ng_exp_values[drc1_ng_exp]);
 	return 0;
 }
-
 /******************************************************************/
 
 static int get_aif2_mode(struct snd_kcontrol *kcontrol,
@@ -1244,20 +1243,44 @@ static const struct snd_kcontrol_new adonisuniv_codec_controls[] = {
 	SOC_ENUM_EXT("DRC1_NG_ENA", drc1_sw_enum[0],
 		get_drc1_ng_ena_ctl, set_drc1_ng_ena_ctl),
 
-	SOC_ENUM_EXT("DRC1_ANTICLIP", drc1_sw_enum[0],
-		get_drc1_anticlip_ctl, set_drc1_anticlip_ctl),
-    
-	SOC_ENUM_EXT("DRC1_QR", drc1_sw_enum[0],
-		get_drc1_qr_ctl, set_drc1_qr_ctl),
+	SOC_ENUM_EXT("DRC1_KNEE2_OP_ENA", drc1_sw_enum[0],
+		get_drc1_knee2_op_ena_ctl, set_drc1_knee2_op_ena_ctl),
+        
+	SOC_ENUM_EXT("DRC1_KNEE_IP", drc1_knee_ip_enum[0],
+		get_drc1_knee_ip, set_drc1_knee_ip),
 
-	SOC_ENUM_EXT("DRC1_ATK", drc1_atk_enum[0],
-		get_drc1_atk, set_drc1_atk),
+	SOC_ENUM_EXT("DRC1_KNEE_OP", drc1_knee_op_enum[0],
+		get_drc1_knee_op, set_drc1_knee_op),
 
+	SOC_ENUM_EXT("DRC1_LO_COMP", drc1_lo_comp_enum[0],
+		get_drc1_lo_comp, set_drc1_lo_comp),
+
+	SOC_ENUM_EXT("DRC1_HI_COMP", drc1_hi_comp_enum[0],
+		get_drc1_hi_comp, set_drc1_hi_comp),
+
+	SOC_ENUM_EXT("DRC1_KNEE2_IP", drc1_knee2_ip_enum[0],
+		get_drc1_knee2_ip, set_drc1_knee2_ip),
+
+    SOC_ENUM_EXT("DRC1_KNEE2_OP", drc1_knee2_op_enum[0],
+		get_drc1_knee2_op, set_drc1_knee2_op),
+
+	SOC_ENUM_EXT("DRC1_NG_EXP", drc1_ng_exp_enum[0],
+		get_drc1_ng_exp, set_drc1_ng_exp),
+        
 	SOC_ENUM_EXT("DRC1_MINGAIN", drc1_mingain_enum[0],
 		get_drc1_mingain, set_drc1_mingain),
 
 	SOC_ENUM_EXT("DRC1_MAXGAIN", drc1_maxgain_enum[0],
 		get_drc1_maxgain, set_drc1_maxgain),
+        
+    SOC_ENUM_EXT("DRC1_NG_MINGAIN", drc1_ng_mingain_enum[0],
+		get_drc1_ng_mingain, set_drc1_ng_mingain),
+
+	SOC_ENUM_EXT("DRC1_ATK", drc1_atk_enum[0],
+		get_drc1_atk, set_drc1_atk),
+
+	SOC_ENUM_EXT("DRC1_DCY", drc1_dcy_enum[0],
+		get_drc1_dcy, set_drc1_dcy),
 
 	SOC_ENUM_EXT("DRC1_QR_THR", drc1_qr_thr_enum[0],
 		get_drc1_qr_thr, set_drc1_qr_thr),
@@ -1265,32 +1288,11 @@ static const struct snd_kcontrol_new adonisuniv_codec_controls[] = {
 	SOC_ENUM_EXT("DRC1_QR_DCY", drc1_qr_dcy_enum[0],
 		get_drc1_qr_dcy, set_drc1_qr_dcy),
 
-	SOC_ENUM_EXT("DRC1_KNEE_IP", drc1_knee_ip_enum[0],
-		get_drc1_knee_ip, set_drc1_knee_ip),
-
-	SOC_ENUM_EXT("DRC1_KNEE_OP", drc1_knee_op_enum[0],
-		get_drc1_knee_op, set_drc1_knee_op),
-
-	SOC_ENUM_EXT("DRC1_HI_COMP", drc1_hi_comp_enum[0],
-		get_drc1_hi_comp, set_drc1_hi_comp),
-
-	SOC_ENUM_EXT("DRC1_LO_COMP", drc1_lo_comp_enum[0],
-		get_drc1_lo_comp, set_drc1_lo_comp),
-
-	SOC_ENUM_EXT("DRC1_NG_MINGAIN", drc1_ng_mingain_enum[0],
-		get_drc1_ng_mingain, set_drc1_ng_mingain),
-
-	SOC_ENUM_EXT("DRC1_KNEE2_IP", drc1_knee2_ip_enum[0],
-		get_drc1_knee2_ip, set_drc1_knee2_ip),
-
-	SOC_ENUM_EXT("DRC1_KNEE2_OP_ENA", drc1_sw_enum[0],
-		get_drc1_knee2_op_ena_ctl, set_drc1_knee2_op_ena_ctl),
-        
-	SOC_ENUM_EXT("DRC1_NG_EXP", drc1_ng_exp_enum[0],
-		get_drc1_ng_exp, set_drc1_ng_exp),
-        
- 	SOC_ENUM_EXT("DRC1_KNEE2_OP", drc1_knee2_op_enum[0],
-		get_drc1_knee2_op, set_drc1_knee2_op),
+	SOC_ENUM_EXT("DRC1_ANTICLIP", drc1_sw_enum[0],
+		get_drc1_anticlip_ctl, set_drc1_anticlip_ctl),
+    
+	SOC_ENUM_EXT("DRC1_QR", drc1_sw_enum[0],
+		get_drc1_qr_ctl, set_drc1_qr_ctl),
 };
 
 static const struct snd_kcontrol_new adonisuniv_controls[] = {

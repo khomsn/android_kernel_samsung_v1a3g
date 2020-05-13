@@ -1680,11 +1680,11 @@ static int wm5102_codec_probe(struct snd_soc_codec *codec)
 	snd_soc_dapm_disable_pin(&codec->dapm, "CLAMP");
 
 	priv->core.arizona->dapm = &codec->dapm;
-
+/*
 #ifdef CONFIG_MFD_ARIZONA
 	arizona_control_init(codec);
 #endif
-
+*/
 	return 0;
 }
 

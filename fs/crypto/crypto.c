@@ -28,7 +28,6 @@
 #include <linux/ratelimit.h>
 #include <linux/bio.h>
 #include <linux/dcache.h>
-#include <linux/namei.h>
 #include <linux/fscrypto.h>
 
 static unsigned int num_prealloc_crypto_pages = 32;
@@ -129,11 +128,11 @@ struct fscrypt_ctx *fscrypt_get_ctx(struct inode *inode, gfp_t gfp_flags)
 EXPORT_SYMBOL(fscrypt_get_ctx);
 
 /**
- * page_crypt_complete() - completion callback for page crypto
- * @req: The asynchronous cipher request context
- * @res: The result of the cipher operation
+ * fscrypt_complete() - The completion callback for page encryption
+ * @req: The asynchronous encryption request context
+ * @res: The result of the encryption operation
  */
-static void page_crypt_complete(struct crypto_async_request *req, int res)
+static void fscrypt_complete(struct crypto_async_request *req, int res)
 {
 	struct fscrypt_completion_result *ecr = req->data;
 
@@ -171,18 +170,18 @@ static int do_page_crypto(struct inode *inode,
 
 	ablkcipher_request_set_callback(
 		req, CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
-		page_crypt_complete, &ecr);
+		fscrypt_complete, &ecr);
 
 	BUILD_BUG_ON(FS_XTS_TWEAK_SIZE < sizeof(index));
-	memcpy(xts_tweak, &index, sizeof(index));
+	memcpy(xts_tweak, &inode->i_ino, sizeof(index));
 	memset(&xts_tweak[sizeof(index)], 0,
 			FS_XTS_TWEAK_SIZE - sizeof(index));
 
 	sg_init_table(&dst, 1);
-	sg_set_page(&dst, dest_page, PAGE_SIZE, 0);
+	sg_set_page(&dst, dest_page, PAGE_CACHE_SIZE, 0);
 	sg_init_table(&src, 1);
-	sg_set_page(&src, src_page, PAGE_SIZE, 0);
-	ablkcipher_request_set_crypt(req, &src, &dst, PAGE_SIZE,
+	sg_set_page(&src, src_page, PAGE_CACHE_SIZE, 0);
+	ablkcipher_request_set_crypt(req, &src, &dst, PAGE_CACHE_SIZE,
 					xts_tweak);
 	if (rw == FS_DECRYPT)
 		res = crypto_ablkcipher_decrypt(req);
@@ -292,7 +291,7 @@ int fscrypt_zeroout_range(struct inode *inode, pgoff_t lblk,
 	struct bio *bio;
 	int ret, err = 0;
 
-	BUG_ON(inode->i_sb->s_blocksize != PAGE_SIZE);
+	BUG_ON(inode->i_sb->s_blocksize != PAGE_CACHE_SIZE);
 
 	ctx = fscrypt_get_ctx(inode, GFP_NOFS);
 	if (IS_ERR(ctx))
@@ -349,24 +348,24 @@ EXPORT_SYMBOL(fscrypt_zeroout_range);
  */
 static int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
-	struct dentry *dir;
+	struct inode *dir = dentry->d_parent->d_inode;
+	struct fscrypt_info *ci = dir->i_crypt_info;
 	int dir_has_key, cached_with_key;
 
-	if (flags & LOOKUP_RCU)
-		return -ECHILD;
-
-	dir = dget_parent(dentry);
-	if (!d_inode(dir)->i_sb->s_cop->is_encrypted(d_inode(dir))) {
-		dput(dir);
+	if (!dir->i_sb->s_cop->is_encrypted(dir))
 		return 0;
-	}
+
+	if (ci && ci->ci_keyring_key &&
+	    (ci->ci_keyring_key->flags & ((1 << KEY_FLAG_INVALIDATED) |
+					  (1 << KEY_FLAG_REVOKED) |
+					  (1 << KEY_FLAG_DEAD))))
+		ci = NULL;
 
 	/* this should eventually be an flag in d_flags */
 	spin_lock(&dentry->d_lock);
 	cached_with_key = dentry->d_flags & DCACHE_ENCRYPTED_WITH_KEY;
 	spin_unlock(&dentry->d_lock);
-	dir_has_key = (d_inode(dir)->i_crypt_info != NULL);
-	dput(dir);
+	dir_has_key = (ci != NULL);
 
 	/*
 	 * If the dentry was cached without the key, and it is a
