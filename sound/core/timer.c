@@ -278,10 +278,9 @@ int snd_timer_open(struct snd_timer_instance **ti,
 		return -ENODEV;
 	}
 	if (!list_empty(&timer->open_list_head)) {
-		struct snd_timer_instance *t =
-			list_entry(timer->open_list_head.next,
+		timeri = list_entry(timer->open_list_head.next,
 				    struct snd_timer_instance, open_list);
-		if (t->flags & SNDRV_TIMER_IFLG_EXCLUSIVE) {
+		if (timeri->flags & SNDRV_TIMER_IFLG_EXCLUSIVE) {
 			mutex_unlock(&register_mutex);
 			return -EBUSY;
 		}
@@ -1959,6 +1958,7 @@ static ssize_t snd_timer_user_read(struct file *file, char __user *buffer,
 		tu->qhead %= tu->queue_size;
 		spin_unlock_irq(&tu->qlock);
 
+		mutex_lock(&tu->ioctl_lock);
 		if (tu->tread) {
 			if (copy_to_user(buffer, &tu->tqueue[qhead],
 					 sizeof(struct snd_timer_tread)))
