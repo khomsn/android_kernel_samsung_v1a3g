@@ -842,4 +842,5 @@ static void __dcache_remove_hash(cache_ent_t *bp)
 	__remove_from_hash(bp);
 }
 
+
 /* end of cache.c */

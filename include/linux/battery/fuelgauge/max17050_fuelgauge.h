@@ -63,7 +63,6 @@ struct sec_fg_info {
 #define VALRT_THRESHOLD_REG	0x01
 #define TALRT_THRESHOLD_REG	0x02
 #define SALRT_THRESHOLD_REG	0x03
-#define ATRATE_REG              0x04
 #define REMCAP_REP_REG			0x05
 #define SOCREP_REG				0x06
 #define TEMPERATURE_REG		0x08
@@ -74,14 +73,12 @@ struct sec_fg_info {
 #define SOCAV_REG				0x0E
 #define REMCAP_MIX_REG			0x0F
 #define FULLCAP_REG				0x10
-#define FULLSOCTHR_REG          0x13
 #define RFAST_REG				0x15
 #define AVR_TEMPERATURE_REG	0x16
 #define CYCLES_REG				0x17
 #define DESIGNCAP_REG			0x18
 #define AVR_VCELL_REG			0x19
 #define CONFIG_REG				0x1D
-#define ICHGTERM_REG            0x1E
 #define REMCAP_AV_REG			0x1F
 #define FULLCAP_NOM_REG		0x23
 #define MISCCFG_REG				0x2B
@@ -129,7 +126,7 @@ enum {
 #define TEMP_RANGE_MAX_NUM	3
 
 struct battery_data_t {
-	u16 Charge_Capacity;
+	u16 Capacity;
 	u16 low_battery_comp_voltage;
 	s32 low_battery_table[CURRENT_RANGE_MAX_NUM][TABLE_MAX];
 	s32 temp_adjust_table[TEMP_RANGE_MAX_NUM][TABLE_MAX];
@@ -141,8 +138,8 @@ struct sec_fg_info {
 	int pr_cnt;
 	/* full charge comp */
 	struct delayed_work	full_comp_work;
-	u32 previous_fuelcap;
-	u32 previous_vffuelcap;
+	u32 previous_fullcap;
+	u32 previous_vffullcap;
 	/* low battery comp */
 	int low_batt_comp_cnt[LOW_BATT_COMP_RANGE_NUM][LOW_BATT_COMP_LEVEL_NUM];
 	int low_batt_comp_flag;
@@ -154,7 +151,7 @@ struct sec_fg_info {
 	u32 soc;
 
 	/* miscellaneous */
-	unsigned long fuelcap_check_interval;
+	unsigned long fullcap_check_interval;
 	int full_check_flag;
 	bool is_first_check;
 };

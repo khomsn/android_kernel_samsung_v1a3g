@@ -83,10 +83,6 @@ static sec_charging_current_t charging_current_table[] = {
 	{1000,	1000,	300,	40*60},/* LAN hub */
 	{460,	460,	300,	40*60},/*mhl usb*/
 	{0, 0,	0,	0},/*power sharing*/
-	{900,	1200,	250,	40*60}, /* SMART_OTG */
-	{1500,	1500,	250,	40*60}, /* SMART_NOTG */
-	{1400,	1400,	250,	40*60}, /* MDOCK_TA */
-	{450,	450,	250,	40*60}  /* MDOCK_USB */
 };
 
 static bool sec_bat_adc_none_init(
@@ -161,18 +157,6 @@ static int sec_bat_is_lpm_check(char *str)
 	return lpcharge;
 }
 __setup("androidboot.mode=", sec_bat_is_lpm_check);
-
-#if defined(CONFIG_PREVENT_SOC_JUMP)
-int fg_reset;
-EXPORT_SYMBOL(fg_reset);
-static int sec_bat_get_fg_reset(char *val)
-{
-	fg_reset = strncmp(val, "1", 1) ? 0 : 1;
-	pr_info("%s, fg_reset:%d\n", __func__, fg_reset);
-	return 1;
-}
-__setup("fg_reset=", sec_bat_get_fg_reset);
-#endif
 
 static bool sec_bat_is_lpm(void)
 {
@@ -479,8 +463,8 @@ static sec_bat_adc_region_t cable_adc_value_table[] = {
 static int polling_time_table[] = {
 	10,	/* BASIC */
 	30,	/* CHARGING */
-	60,	/* DISCHARGING */
-	300,	/* NOT_CHARGING */
+	30,	/* DISCHARGING */
+	30,	/* NOT_CHARGING */
 	3600,	/* SLEEP */
 };
 
@@ -488,7 +472,7 @@ static int polling_time_table[] = {
 static struct battery_data_t adonis_battery_data[] = {
 	/* SDI battery data */
 	{
-		.Charge_Capacity = 0x4A8E,
+		.Capacity = 0x4A8E,
 		.low_battery_comp_voltage = 3600,
 		.low_battery_table = {
 			/* range, slope, offset */
@@ -517,13 +501,13 @@ static void sec_bat_check_batt_id(void)
 	/* SDI: +/-700, ATL: +2000 */
 	if (ret > 1700) {
 		sec_battery_pdata.vendor = "ATL ATL";
-		adonis_battery_data[0].Charge_Capacity = 0x4958;
+		adonis_battery_data[0].Capacity = 0x4958;
 		adonis_battery_data[0].type_str = "ATL";
 	}
 
 	pr_err("%s: batt_type(%s), batt_id(%d), cap(0x%x), type(%s)\n",
 		__func__, sec_battery_pdata.vendor, ret,
-		adonis_battery_data[0].Charge_Capacity, adonis_battery_data[0].type_str);
+		adonis_battery_data[0].Capacity, adonis_battery_data[0].type_str);
 }
 
 sec_battery_platform_data_t sec_battery_pdata = {
@@ -690,14 +674,8 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.capacity_calculation_type =
 		SEC_FUELGAUGE_CAPACITY_TYPE_RAW |
 		SEC_FUELGAUGE_CAPACITY_TYPE_SCALE |
-#if defined(CONFIG_PREVENT_SOC_JUMP)
-		SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE |
-		SEC_FUELGAUGE_CAPACITY_TYPE_ATOMIC |
-		SEC_FUELGAUGE_CAPACITY_TYPE_SKIP_ABNORMAL,
-#else
 		SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE,
 		/* SEC_FUELGAUGE_CAPACITY_TYPE_ATOMIC, */
-#endif
 	.capacity_max = 1000,
 	.capacity_max_margin = 50,
 	.capacity_min = 0,

@@ -560,7 +560,7 @@ static const sec_bat_adc_table_data_t temp_table[] = {
 	{ -200,  -200 },
 	{ -300,  -300 },
 };
-#else/* N2A,N1A*/
+#else/* N2A */
 static const sec_bat_adc_table_data_t temp_table[] = {
 	{  1100,	 1140 },
 	{  1000,	 1040 },
@@ -663,8 +663,8 @@ static sec_bat_adc_region_t cable_adc_value_table[] = {
 static int polling_time_table[] = {
 	10,	/* BASIC */
 	30,	/* CHARGING */
-	60,	/* DISCHARGING */
-	300,	/* NOT_CHARGING */
+	30,	/* DISCHARGING */
+	30,	/* NOT_CHARGING */
 	3600,	/* SLEEP */
 };
 
@@ -672,11 +672,7 @@ static int polling_time_table[] = {
 static struct battery_data_t adonis_battery_data[] = {
 	/* SDI battery data */
 	{
-#if defined(CONFIG_N1A)
-		.Charge_Capacity = 0x4038,// = 8220mAh with 10m ohm with 5uV step
-#else
-		.Charge_Capacity = 0x3F76,
-#endif
+		.Capacity = 0x3F76,
 		.low_battery_comp_voltage = 3600,
 		.low_battery_table = {
 			/* range, slope, offset */
@@ -706,22 +702,18 @@ static void sec_bat_check_batt_id(void)
 	/* SDI: +/-700, BYD: +/-1300, ATL: +2000 */
 	if (ret > 1700) {
 		sec_battery_pdata.vendor = "ATL ATL";
-#if defined(CONFIG_N1A)
-		adonis_battery_data[0].Charge_Capacity = 0x4038;// = 8220mAh with 10m ohm with 5uV step
-#else
-		adonis_battery_data[0].Charge_Capacity = 0x4074;
-#endif
+		adonis_battery_data[0].Capacity = 0x4074;
 		adonis_battery_data[0].type_str = "ATL";
 	} else if (ret > 1000) {
 		sec_battery_pdata.vendor = "BYD BYD";
-		adonis_battery_data[0].Charge_Capacity = 0x4010;
+		adonis_battery_data[0].Capacity = 0x4010;
 		adonis_battery_data[0].type_str = "BYD";
 	}
 #endif
 
 	pr_err("%s: batt_type(%s), batt_id(%d), cap(0x%x), type(%s)\n",
 		__func__, sec_battery_pdata.vendor, ret,
-		adonis_battery_data[0].Charge_Capacity, adonis_battery_data[0].type_str);
+		adonis_battery_data[0].Capacity, adonis_battery_data[0].type_str);
 }
 
 sec_battery_platform_data_t sec_battery_pdata = {
@@ -1190,9 +1182,9 @@ void __init exynos5_universal5420_battery_init(void)
 	/* board dependent changes in booting */
 	charger_gpio_init();
 #if defined(CONFIG_CHAGALL)
-	adonis_battery_data[0].Charge_Capacity = 0x3A98;
+	adonis_battery_data[0].Capacity = 0x3A98;
 #elif defined(CONFIG_KLIMT)
-	adonis_battery_data[0].Charge_Capacity = 0x2710;
+	adonis_battery_data[0].Capacity = 0x2710;
 #endif
 	platform_add_devices(
 		universal5420_battery_devices,
