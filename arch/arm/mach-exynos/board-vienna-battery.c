@@ -472,6 +472,13 @@ static int polling_time_table[] = {
 static struct battery_data_t adonis_battery_data[] = {
 	/* SDI battery data */
 	{
+        /*****************************************************************************/
+        /* sensor 1 step = 0.5mAh which is 10m ohm with 5uV 
+         * step = (1/0.5mAh)
+         * 9500mAh = 19000 = 0x4A38
+         * so set to 0x4A8E = 19086 =>9543mAh
+         *  Set Capacity to 100.45%
+         * ***************************************************************************/
 		.Capacity = 0x4A8E,
 		.low_battery_comp_voltage = 3600,
 		.low_battery_table = {

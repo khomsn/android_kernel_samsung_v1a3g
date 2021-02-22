@@ -63,6 +63,7 @@ struct sec_fg_info {
 #define VALRT_THRESHOLD_REG	0x01
 #define TALRT_THRESHOLD_REG	0x02
 #define SALRT_THRESHOLD_REG	0x03
+#define ATRATE_REG              0x04
 #define REMCAP_REP_REG			0x05
 #define SOCREP_REG				0x06
 #define TEMPERATURE_REG		0x08
@@ -73,12 +74,14 @@ struct sec_fg_info {
 #define SOCAV_REG				0x0E
 #define REMCAP_MIX_REG			0x0F
 #define FULLCAP_REG				0x10
+#define FULLSOCTHR_REG          0x13
 #define RFAST_REG				0x15
 #define AVR_TEMPERATURE_REG	0x16
 #define CYCLES_REG				0x17
 #define DESIGNCAP_REG			0x18
 #define AVR_VCELL_REG			0x19
 #define CONFIG_REG				0x1D
+#define ICHGTERM_REG            0x1E
 #define REMCAP_AV_REG			0x1F
 #define FULLCAP_NOM_REG		0x23
 #define MISCCFG_REG				0x2B

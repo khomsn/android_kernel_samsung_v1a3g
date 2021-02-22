@@ -560,7 +560,7 @@ static const sec_bat_adc_table_data_t temp_table[] = {
 	{ -200,  -200 },
 	{ -300,  -300 },
 };
-#else/* N2A */
+#else/* N2A,N1A*/
 static const sec_bat_adc_table_data_t temp_table[] = {
 	{  1100,	 1140 },
 	{  1000,	 1040 },
@@ -672,7 +672,17 @@ static int polling_time_table[] = {
 static struct battery_data_t adonis_battery_data[] = {
 	/* SDI battery data */
 	{
+#if defined(CONFIG_N1A)
+        /*****************************************************************************/
+        /* sensor 1 step = 0.5mAh which is 10m ohm with 5uV 
+         * step = (1/0.5mAh)
+         * 8220mAh = 16440 = 0x4038
+         *  Set Capacity to 100%
+         * ***************************************************************************/
+		.Capacity = 0x4038,
+#else
 		.Capacity = 0x3F76,
+#endif
 		.low_battery_comp_voltage = 3600,
 		.low_battery_table = {
 			/* range, slope, offset */
@@ -702,7 +712,17 @@ static void sec_bat_check_batt_id(void)
 	/* SDI: +/-700, BYD: +/-1300, ATL: +2000 */
 	if (ret > 1700) {
 		sec_battery_pdata.vendor = "ATL ATL";
+#if defined(CONFIG_N1A)
+        /*****************************************************************************/
+        /* sensor 1 step = 0.5mAh which is 10m ohm with 5uV 
+         * step = (1/0.5mAh)
+         * 8220mAh = 16440 = 0x4038
+         *  Set Capacity to 100%
+         * ***************************************************************************/
+		adonis_battery_data[0].Capacity = 0x4038;
+#else
 		adonis_battery_data[0].Capacity = 0x4074;
+#endif
 		adonis_battery_data[0].type_str = "ATL";
 	} else if (ret > 1000) {
 		sec_battery_pdata.vendor = "BYD BYD";
