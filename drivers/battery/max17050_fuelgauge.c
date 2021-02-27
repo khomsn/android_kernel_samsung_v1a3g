@@ -800,6 +800,7 @@ static int fg_read_remain_cap_percent(struct i2c_client *client)
     
     if (fullcap < cell_cap) {
         fullcap = cell_cap;
+        fg_write_register(client, FULLCAP_REG, (u16)(fullcap));
     }
 /*
     dev_info(&client->dev, "%s: prev_soc = %i\n", __func__, prev_soc);
@@ -1437,7 +1438,8 @@ void fg_fullcharged_compensation(struct i2c_client *client,
 				new_fullcap_data);
 		}
 	}
-
+    
+    if(new_fullcap_data >= get_battery_data(fuelgauge).Capacity * 90/100){
 	/* 4. Write RepSOC(06h)=100%; */
 	fg_write_register(client, SOCREP_REG, (u16)(0x64 << 8));
 
@@ -1446,7 +1448,8 @@ void fg_fullcharged_compensation(struct i2c_client *client,
 
 	/* 6. Write AVSOC(0Eh)=100%; */
 	fg_write_register(client, SOCAV_REG, (u16)(0x64 << 8));
-
+    }
+    
 	/* if pre_update case, skip updating PrevFullCAP value. */
 	if (!pre_update)
 		fuelgauge->info.previous_fullcap =
