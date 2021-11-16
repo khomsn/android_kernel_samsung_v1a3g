@@ -614,7 +614,7 @@ static int llc_wait_data(struct sock *sk, long timeo)
 		if (signal_pending(current))
 			break;
 		rc = 0;
-		if (sk_wait_data(sk, &timeo))
+		if (sk_wait_data(sk, &timeo, NULL))
 			break;
 	}
 	return rc;
@@ -627,6 +627,7 @@ static void llc_cmsg_rcv(struct msghdr *msg, struct sk_buff *skb)
 	if (llc->cmsg_flags & LLC_CMSG_PKTINFO) {
 		struct llc_pktinfo info;
 
+		memset(&info, 0, sizeof(info));
 		info.lpi_ifindex = llc_sk(skb->sk)->dev->ifindex;
 		llc_pdu_decode_dsap(skb, &info.lpi_sap);
 		llc_pdu_decode_da(skb, info.lpi_mac);
@@ -803,7 +804,7 @@ static int llc_ui_recvmsg(struct kiocb *iocb, struct socket *sock,
 			release_sock(sk);
 			lock_sock(sk);
 		} else
-			sk_wait_data(sk, &timeo);
+			sk_wait_data(sk, &timeo, NULL);
 
 		if ((flags & MSG_PEEK) && peek_seq != llc->copied_seq) {
 			if (net_ratelimit())
@@ -841,7 +842,7 @@ static int llc_ui_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 		if (!(flags & MSG_PEEK)) {
 			spin_lock_irqsave(&sk->sk_receive_queue.lock, cpu_flags);
-			sk_eat_skb(sk, skb, 0);
+			sk_eat_skb(sk, skb, false);
 			spin_unlock_irqrestore(&sk->sk_receive_queue.lock, cpu_flags);
 			*seq = 0;
 		}
@@ -864,7 +865,7 @@ copy_uaddr:
 
 	if (!(flags & MSG_PEEK)) {
 			spin_lock_irqsave(&sk->sk_receive_queue.lock, cpu_flags);
-			sk_eat_skb(sk, skb, 0);
+			sk_eat_skb(sk, skb, false);
 			spin_unlock_irqrestore(&sk->sk_receive_queue.lock, cpu_flags);
 			*seq = 0;
 	}

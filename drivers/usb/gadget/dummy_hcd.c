@@ -169,6 +169,8 @@ struct dummy_hcd {
 
 	struct usb_device		*udev;
 	struct list_head		urbp_list;
+	struct urbp			*next_frame_urbp;
+
 	u32				stream_en_ep;
 	u8				num_stream[30 / 2];
 
@@ -350,6 +352,7 @@ static void set_link_state_by_speed(struct dummy_hcd *dum_hcd)
 static void set_link_state(struct dummy_hcd *dum_hcd)
 {
 	struct dummy *dum = dum_hcd->dum;
+	unsigned int power_bit;
 
 	dum_hcd->active = 0;
 	if (dum->pullup)
@@ -360,19 +363,21 @@ static void set_link_state(struct dummy_hcd *dum_hcd)
 			return;
 
 	set_link_state_by_speed(dum_hcd);
+	power_bit = (dummy_hcd_to_hcd(dum_hcd)->speed == HCD_USB3 ?
+			USB_SS_PORT_STAT_POWER : USB_PORT_STAT_POWER);
 
 	if ((dum_hcd->port_status & USB_PORT_STAT_ENABLE) == 0 ||
 	     dum_hcd->active)
 		dum_hcd->resuming = 0;
 
 	/* if !connected or reset */
-	if ((dum_hcd->port_status & USB_PORT_STAT_CONNECTION) == 0 ||
+	if ((dum_hcd->port_status & power_bit) == 0 ||
 			(dum_hcd->port_status & USB_PORT_STAT_RESET) != 0) {
 		/*
 		 * We're connected and not reset (reset occurred now),
 		 * and driver attached - disconnect!
 		 */
-		if ((dum_hcd->old_status & USB_PORT_STAT_CONNECTION) != 0 &&
+		if ((dum_hcd->old_status & power_bit) != 0 &&
 		    (dum_hcd->old_status & USB_PORT_STAT_RESET) == 0 &&
 		    dum->driver) {
 			stop_activity(dum);
@@ -1200,6 +1205,8 @@ static int dummy_urb_enqueue(
 
 	list_add_tail(&urbp->urbp_list, &dum_hcd->urbp_list);
 	urb->hcpriv = urbp;
+	if (!dum_hcd->next_frame_urbp)
+		dum_hcd->next_frame_urbp = urbp;
 	if (usb_pipetype(urb->pipe) == PIPE_CONTROL)
 		urb->error_count = 1;		/* mark as a new urb */
 
@@ -1703,6 +1710,7 @@ static void dummy_timer(unsigned long _dum_hcd)
 		spin_unlock_irqrestore(&dum->lock, flags);
 		return;
 	}
+	dum_hcd->next_frame_urbp = NULL;
 
 	for (i = 0; i < DUMMY_ENDPOINTS; i++) {
 		if (!ep_name[i])
@@ -1718,6 +1726,10 @@ restart:
 		struct dummy_ep		*ep = NULL;
 		int			type;
 		int			status = -EINPROGRESS;
+
+		/* stop when we reach URBs queued after the timer interrupt */
+		if (urbp == dum_hcd->next_frame_urbp)
+			break;
 
 		urb = urbp->urb;
 		if (urb->unlinked)

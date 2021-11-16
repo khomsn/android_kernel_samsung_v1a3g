@@ -437,7 +437,7 @@ char *symbol_string(char *buf, char *end, void *ptr,
 	else if (ext != 'f' && ext != 's')
 		sprint_symbol(sym, value);
 	else
-		kallsyms_lookup(value, NULL, NULL, NULL, sym);
+		sprint_symbol_no_offset(sym, value);
 
 	return string(buf, end, sym, spec);
 #else
@@ -810,7 +810,7 @@ char *netdev_feature_string(char *buf, char *end, const u8 *addr,
 	return number(buf, end, *(const netdev_features_t *)addr, spec);
 }
 
-int kptr_restrict __read_mostly = 4;
+int kptr_restrict __read_mostly;
 
 /*
  * Show a '%p' thing.  A kernel extension is that the '%p' is followed

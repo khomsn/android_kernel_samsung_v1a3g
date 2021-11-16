@@ -21,6 +21,7 @@
 #include <linux/diagchar.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>
+#include <linux/ratelimit.h>
 #include <linux/of.h>
 #include <linux/spinlock.h>
 #ifdef CONFIG_DIAG_OVER_USB
@@ -95,7 +96,7 @@ do {									\
 } while (0)
 
 #define CHK_OVERFLOW(bufStart, start, end, length) \
-  ((((bufStart) <= (start)) && ((end) - (start) >= (length)) && ((length) > 0)) ? 1 : 0)
+	((bufStart <= start) && (end - start >= length) && (length > 0)) ? 1 : 0
 
 /* Determine if this device uses a device tree */
 #ifdef CONFIG_OF
@@ -1447,6 +1448,12 @@ void diag_process_hdlc(void *data, unsigned len)
 	hdlc.escaping = 0;
 
 	ret = diag_hdlc_decode(&hdlc);
+
+	if (hdlc.dest_idx < 4) {
+		pr_err_ratelimited("diag: In %s, message is too short, len: %d,"
+			" dest len: %d\n", __func__, len, hdlc.dest_idx);
+		return;
+	}
 
 	if (ret)
 		type = diag_process_apps_pkt(driver->hdlc_buf,

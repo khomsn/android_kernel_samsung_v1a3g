@@ -988,8 +988,6 @@ int hidp_add_connection(struct hidp_connadd_req *req, struct socket *ctrl_sock, 
 
 	BT_DBG("");
 
-	if (!l2cap_is_socket(ctrl_sock) || !l2cap_is_socket(intr_sock))
-		return -EINVAL;
 	if (bacmp(&bt_sk(ctrl_sock->sk)->src, &bt_sk(intr_sock->sk)->src) ||
 			bacmp(&bt_sk(ctrl_sock->sk)->dst, &bt_sk(intr_sock->sk)->dst))
 		return -ENOTUNIQ;
@@ -1209,41 +1207,16 @@ int hidp_get_conninfo(struct hidp_conninfo *ci)
 	return err;
 }
 
-static const struct hid_device_id hidp_table[] = {
-	{ HID_BLUETOOTH_DEVICE(HID_ANY_ID, HID_ANY_ID) },
-	{ }
-};
-
-static struct hid_driver hidp_driver = {
-	.name = "generic-bluetooth",
-	.id_table = hidp_table,
-};
-
 static int __init hidp_init(void)
 {
-	int ret;
-
 	BT_INFO("HIDP (Human Interface Emulation) ver %s", VERSION);
 
-	ret = hid_register_driver(&hidp_driver);
-	if (ret)
-		goto err;
-
-	ret = hidp_init_sockets();
-	if (ret)
-		goto err_drv;
-
-	return 0;
-err_drv:
-	hid_unregister_driver(&hidp_driver);
-err:
-	return ret;
+	return hidp_init_sockets();
 }
 
 static void __exit hidp_exit(void)
 {
 	hidp_cleanup_sockets();
-	hid_unregister_driver(&hidp_driver);
 }
 
 module_init(hidp_init);

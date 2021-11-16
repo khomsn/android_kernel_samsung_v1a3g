@@ -31,9 +31,10 @@
 #include <linux/gpio.h>
 #include <plat/gpio-cfg.h>
 
-#define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(1000))
+#define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(100))
 
 struct exynos5_i2c {
+	raw_spinlock_t		lock;
 	unsigned int		suspended:1;
 
 	struct i2c_msg		*msg;
@@ -116,24 +117,22 @@ static irqreturn_t exynos5_i2c_irq(int irqno, void *dev_id)
 	unsigned long tmp;
 	unsigned char byte;
 
+	tmp = readl(i2c->regs + HSI2C_INT_STATUS);
+
 	if (i2c->msg->flags & I2C_M_RD) {
 		while ((readl(i2c->regs + HSI2C_FIFO_STATUS) &
 			0x1000000) == 0) {
 			byte = (unsigned char)readl(i2c->regs + HSI2C_RX_DATA);
 			i2c->msg->buf[i2c->msg_byte_ptr++] = byte;
 		}
-
-		if (i2c->msg_byte_ptr >= i2c->msg->len)
-			exynos5_i2c_stop(i2c);
 	} else {
 		byte = i2c->msg->buf[i2c->msg_byte_ptr++];
 		writel(byte, i2c->regs + HSI2C_TX_DATA);
-
-		if (i2c->msg_byte_ptr >= i2c->msg->len)
-			exynos5_i2c_stop(i2c);
 	}
 
-	tmp = readl(i2c->regs + HSI2C_INT_STATUS);
+	if (i2c->msg_byte_ptr >= i2c->msg->len)
+		exynos5_i2c_stop(i2c);
+
 	writel(tmp, i2c->regs +  HSI2C_INT_STATUS);
 
 	return IRQ_HANDLED;
@@ -159,6 +158,7 @@ static int exynos5_i2c_reset(struct exynos5_i2c *i2c)
 static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 			      struct i2c_msg *msgs, int num, int stop)
 {
+	unsigned long flags;
 	unsigned long timeout;
 	unsigned long trans_status;
 	unsigned long usi_fifo_stat;
@@ -175,6 +175,8 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 
 	pdata = i2c->dev->platform_data;
 	operation_mode = pdata->operation_mode;
+
+	raw_spin_lock_irqsave(&i2c->lock, flags);
 
 	i2c->msg = msgs;
 	i2c->msg_byte_ptr = 0;
@@ -223,6 +225,8 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 	writel(i2c_addr, i2c->regs + HSI2C_ADDR);
 
 	writel(usi_ctl, i2c->regs + HSI2C_CTL);
+
+	raw_spin_unlock_irqrestore(&i2c->lock, flags);
 
 	i2c_auto_conf &= ~(0xffff);
 	i2c_auto_conf |= i2c->msg->len;
@@ -352,7 +356,7 @@ static int exynos5_i2c_xfer(struct i2c_adapter *adap,
 	struct i2c_msg *msgs_ptr = msgs;
 
 	if (i2c->suspended) {
-		dev_err(i2c->dev, "HS-I2C is not initialzed.\n");
+		dev_err(i2c->dev, "HS-I2C is not initialized.\n");
 		return -EIO;
 	}
 
@@ -531,6 +535,7 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 	i2c->adap.retries = 2;
 	i2c->adap.class   = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 
+	raw_spin_lock_init(&i2c->lock);
 	init_completion(&i2c->msg_complete);
 
 	i2c->dev = &pdev->dev;
@@ -578,13 +583,15 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 		goto err_iomap;
 
 	i2c->irq = ret = platform_get_irq(pdev, 0);
-	if (ret <= 0) {
+	if (ret < 0) {
 		dev_err(&pdev->dev, "cannot find HS-I2C IRQ\n");
 		goto err_iomap;
 	}
 
+	raw_spin_lock(&i2c->lock);
 	ret = request_irq(i2c->irq, exynos5_i2c_irq, IRQF_DISABLED,
 			  dev_name(&pdev->dev), i2c);
+	raw_spin_unlock(&i2c->lock);
 
 	if (ret != 0) {
 		dev_err(&pdev->dev, "cannot request HS-I2C IRQ %d\n", i2c->irq);

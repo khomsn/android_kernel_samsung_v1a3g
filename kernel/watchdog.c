@@ -22,7 +22,6 @@
 #include <linux/notifier.h>
 #include <linux/module.h>
 #include <linux/sysctl.h>
-#include <linux/jiffies.h>
 
 #include <asm/irq_regs.h>
 #include <linux/perf_event.h>
@@ -40,7 +39,6 @@ static DEFINE_PER_CPU(bool, hard_watchdog_warn);
 static DEFINE_PER_CPU(bool, watchdog_nmi_touch);
 static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts);
 static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts_saved);
-static DEFINE_PER_CPU(unsigned long, lockup_detect_timeout);
 #endif
 #ifdef CONFIG_HARDLOCKUP_DETECTOR_NMI
 static DEFINE_PER_CPU(struct perf_event *, watchdog_ev);
@@ -197,18 +195,10 @@ static int is_hardlockup_other_cpu(int cpu)
 {
 	unsigned long hrint = per_cpu(hrtimer_interrupts, cpu);
 
-	/*
-	 * Testing every 3 samples could make a touble rarely in case of CPU
-	 * hotplug. Below codes insure to pass the watchdog_thresh time for
-	 * the testee CPU.
-	 */
-	if (per_cpu(hrtimer_interrupts_saved, cpu) == hrint &&
-		time_after(jiffies, per_cpu(lockup_detect_timeout, cpu)))
+	if (per_cpu(hrtimer_interrupts_saved, cpu) == hrint)
 		return 1;
 
 	per_cpu(hrtimer_interrupts_saved, cpu) = hrint;
-	per_cpu(lockup_detect_timeout, cpu)
-			= jiffies + (unsigned long)watchdog_thresh * HZ;
 	return 0;
 }
 
@@ -514,7 +504,6 @@ static void watchdog_prepare_cpu(int cpu)
 	 * cpu.
 	 */
 	per_cpu(watchdog_nmi_touch, cpu) = true;
-	per_cpu(lockup_detect_timeout, cpu) = jiffies;
 #endif
 }
 

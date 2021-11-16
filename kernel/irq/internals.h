@@ -84,7 +84,7 @@ static inline void irq_unlock_sparse(void) { }
 
 extern void init_kstat_irqs(struct irq_desc *desc, int node, int nr);
 
-irqreturn_t handle_irq_event_percpu(struct irq_desc *desc, struct irqaction *action);
+irqreturn_t handle_irq_event_percpu(struct irq_desc *desc);
 irqreturn_t handle_irq_event(struct irq_desc *desc);
 
 /* Resending of interrupts :*/
@@ -108,6 +108,9 @@ static inline void unregister_handler_proc(unsigned int irq,
 extern int irq_select_affinity_usr(unsigned int irq, struct cpumask *mask);
 
 extern void irq_set_thread_affinity(struct irq_desc *desc);
+
+extern int irq_do_set_affinity(struct irq_data *data,
+			       const struct cpumask *dest, bool force);
 
 /* Inline functions for support of irq chips on slow busses */
 static inline void chip_bus_lock(struct irq_desc *desc)

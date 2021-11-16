@@ -3,7 +3,8 @@
  * Copyright 2005-2006, Devicescape Software, Inc.
  * Copyright 2006-2007	Jiri Benc <jbenc@suse.cz>
  * Copyright 2007-2008	Johannes Berg <johannes@sipsolutions.net>
- * Copyright 2015-2017	Intel Deutschland GmbH
+ * Copyright 2013-2014 Intel Mobile Communications GmbH
+ * Copyright 2015-2017 Intel Deutschland GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -196,6 +197,26 @@ static void ieee80211_key_disable_hw_accel(struct ieee80211_key *key)
 	key->flags &= ~KEY_FLAG_UPLOADED_TO_HARDWARE;
 }
 
+void ieee80211_key_removed(struct ieee80211_key_conf *key_conf)
+{
+	struct ieee80211_key *key;
+
+	key = container_of(key_conf, struct ieee80211_key, conf);
+
+	might_sleep();
+	assert_key_lock(key->local);
+
+	key->flags &= ~KEY_FLAG_UPLOADED_TO_HARDWARE;
+
+	/*
+	 * Flush TX path to avoid attempts to use this key
+	 * after this function returns. Until then, drivers
+	 * must be prepared to handle the key.
+	 */
+	synchronize_rcu();
+}
+EXPORT_SYMBOL_GPL(ieee80211_key_removed);
+
 static void __ieee80211_set_default_key(struct ieee80211_sub_if_data *sdata,
 					int idx, bool uni, bool multi)
 {
@@ -374,9 +395,8 @@ struct ieee80211_key *ieee80211_key_alloc(u32 cipher, int idx, size_t key_len,
 		key->conf.iv_len = 0;
 		key->conf.icv_len = sizeof(struct ieee80211_mmie);
 		if (seq)
-			for (j = 0; j < CMAC_PN_LEN; j++)
-				key->u.aes_cmac.rx_pn[j] =
-					seq[CMAC_PN_LEN - j - 1];
+			for (j = 0; j < 6; j++)
+				key->u.aes_cmac.rx_pn[j] = seq[6 - j - 1];
 		/*
 		 * Initialize AES key state here as an optimization so that
 		 * it does not need to be initialized for every packet.
@@ -405,7 +425,7 @@ static void __ieee80211_key_destroy(struct ieee80211_key *key)
 	 * Synchronize so the TX path can no longer be using
 	 * this key before we free/remove it.
 	 */
-	synchronize_net();
+	synchronize_rcu();
 
 	if (key->local)
 		ieee80211_key_disable_hw_accel(key);
@@ -435,6 +455,32 @@ int ieee80211_key_link(struct ieee80211_key *key,
 
 	pairwise = key->conf.flags & IEEE80211_KEY_FLAG_PAIRWISE;
 	idx = key->conf.keyidx;
+
+	if (sta) {
+		/*
+		 * some hardware cannot handle TKIP with QoS, so
+		 * we indicate whether QoS could be in use.
+		 */
+		if (test_sta_flag(sta, WLAN_STA_WME))
+			key->conf.flags |= IEEE80211_KEY_FLAG_WMM_STA;
+	} else {
+		if (sdata->vif.type == NL80211_IFTYPE_STATION) {
+			struct sta_info *ap;
+
+			/*
+			 * We're getting a sta pointer in, so must be under
+			 * appropriate locking for sta_info_get().
+			 */
+
+			/* same here, the AP could be using QoS */
+			ap = sta_info_get(key->sdata, key->sdata->u.mgd.bssid);
+			if (ap) {
+				if (test_sta_flag(ap, WLAN_STA_WME))
+					key->conf.flags |=
+						IEEE80211_KEY_FLAG_WMM_STA;
+			}
+		}
+	}
 
 	mutex_lock(&sdata->local->key_mtx);
 
@@ -468,8 +514,7 @@ int ieee80211_key_link(struct ieee80211_key *key,
 	ieee80211_debugfs_key_add(key);
 
 	ret = ieee80211_key_enable_hw_accel(key);
-
- out:
+out:
 	mutex_unlock(&sdata->local->key_mtx);
 
 	return ret;

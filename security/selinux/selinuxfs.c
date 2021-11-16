@@ -41,10 +41,6 @@
 #include "objsec.h"
 #include "conditional.h"
 
-#if defined(CONFIG_TZ_ICCC)
-#include <linux/security/Iccc_Interface.h>
-#endif
-
 /* Policy capability filenames */
 static char *policycap_names[] = {
 	"network_peer_controls",
@@ -1413,6 +1409,7 @@ static struct avc_cache_stats *sel_avc_get_stat_idx(loff_t *idx)
 		*idx = cpu + 1;
 		return &per_cpu(avc_cache_stats, cpu);
 	}
+	(*idx)++;
 	return NULL;
 }
 

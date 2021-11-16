@@ -786,19 +786,37 @@ static int pp_iface_stat_line(bool header, char *outp,
 			       "tx_other_bytes tx_other_packets\n"
 			);
 	} else {
+		struct rtnl_link_stats64 dev_stats, *stats;
+		__u64 rx_pkts, tx_pkts, rx_bytes, tx_bytes;
 		struct data_counters *cnts;
 		int cnt_set = 0;   /* We only use one set for the device */
 		cnts = &iface_entry->totals_via_skb;
+
+		if (iface_entry->active) {
+			stats = dev_get_stats(iface_entry->net_dev, &dev_stats);
+			rx_bytes = iface_entry->totals_via_dev[IFS_RX].bytes
+					+ stats->rx_bytes;
+			rx_pkts = iface_entry->totals_via_dev[IFS_RX].packets
+					+ stats->rx_packets;
+			tx_bytes = iface_entry->totals_via_dev[IFS_TX].bytes
+					+ stats->tx_bytes;
+			tx_pkts = iface_entry->totals_via_dev[IFS_TX].packets
+					+ stats->tx_packets;
+		} else {
+			rx_bytes = iface_entry->totals_via_dev[IFS_RX].bytes;
+			rx_pkts = iface_entry->totals_via_dev[IFS_RX].packets;
+			tx_bytes = iface_entry->totals_via_dev[IFS_TX].bytes;
+			tx_pkts = iface_entry->totals_via_dev[IFS_TX].packets;
+		}
+
 		len = snprintf(
 			outp, char_count,
 			"%s "
 			"%llu %llu %llu %llu %llu %llu %llu %llu "
 			"%llu %llu %llu %llu %llu %llu %llu %llu\n",
 			iface_entry->ifname,
-			dc_sum_bytes(cnts, cnt_set, IFS_RX),
-			dc_sum_packets(cnts, cnt_set, IFS_RX),
-			dc_sum_bytes(cnts, cnt_set, IFS_TX),
-			dc_sum_packets(cnts, cnt_set, IFS_TX),
+			rx_bytes, rx_pkts,
+			tx_bytes, tx_pkts,
 			cnts->bpc[cnt_set][IFS_RX][IFS_TCP].bytes,
 			cnts->bpc[cnt_set][IFS_RX][IFS_TCP].packets,
 			cnts->bpc[cnt_set][IFS_RX][IFS_UDP].bytes,
@@ -1190,18 +1208,6 @@ static struct sock_tag *get_sock_stat_nl(const struct sock *sk)
 	return sock_tag_tree_search(&sock_tag_tree, sk);
 }
 
-static struct sock_tag *get_sock_stat(const struct sock *sk)
-{
-	struct sock_tag *sock_tag_entry;
-	MT_DEBUG("qtaguid: get_sock_stat(sk=%p)\n", sk);
-	if (!sk)
-		return NULL;
-	spin_lock_bh(&sock_tag_list_lock);
-	sock_tag_entry = get_sock_stat_nl(sk);
-	spin_unlock_bh(&sock_tag_list_lock);
-	return sock_tag_entry;
-}
-
 static int ipx_proto(const struct sk_buff *skb,
 		     struct xt_action_param *par)
 {
@@ -1209,7 +1215,7 @@ static int ipx_proto(const struct sk_buff *skb,
 
 	switch (par->family) {
 	case NFPROTO_IPV6:
-		tproto = ipv6_find_hdr(skb, &thoff, -1, NULL);
+		tproto = ipv6_find_hdr(skb, &thoff, -1, NULL, NULL);
 		if (tproto < 0)
 			MT_DEBUG("%s(): transport header not found in ipv6"
 				 " skb=%p\n", __func__, skb);
@@ -1438,12 +1444,15 @@ static void if_tag_stat_update(const char *ifname, uid_t uid,
 	 * Look for a tagged sock.
 	 * It will have an acct_uid.
 	 */
-	sock_tag_entry = get_sock_stat(sk);
+	spin_lock_bh(&sock_tag_list_lock);
+	sock_tag_entry = sk ? get_sock_stat_nl(sk) : NULL;
 	if (sock_tag_entry) {
 		tag = sock_tag_entry->tag;
 		acct_tag = get_atag_from_tag(tag);
 		uid_tag = get_utag_from_tag(tag);
-	} else {
+	}
+	spin_unlock_bh(&sock_tag_list_lock);
+	if (!sock_tag_entry) {
 		acct_tag = make_atag_from_value(0);
 		tag = combine_atag_with_uid(acct_tag, uid);
 		uid_tag = make_tag_from_uid(uid);
@@ -2607,7 +2616,7 @@ static int pp_stats_line(struct proc_print_info *ppi, int cnt_set)
 		tag_t tag = ppi->ts_entry->tn.tag;
 		uid_t stat_uid = get_uid_from_tag(tag);
 		/* Detailed tags are not available to everybody */
-		if (!can_read_other_uid_stats(stat_uid)) {
+		    if(!can_read_other_uid_stats(stat_uid)) {
 			CT_DEBUG("qtaguid: stats line: "
 				 "%s 0x%llx %u: insufficient priv "
 				 "from pid=%u tgid=%u uid=%u stats.gid=%u\n",

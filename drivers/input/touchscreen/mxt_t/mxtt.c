@@ -1642,7 +1642,7 @@ static void mxt_handle_T62_object(struct mxt_data *data)
 		tsp_debug_err(true, &data->client->dev, "%s: failed to write T62 object.\n",
 				__func__);
 	else
-		tsp_debug_err(true, &data->client->dev, "%s: Setting T62 report disable.\n",
+		tsp_debug_info(true, &data->client->dev, "%s: Setting T62 report disable.\n",
 				__func__);
 }
 static void mxt_handle_init_data(struct mxt_data *data)
@@ -2245,7 +2245,7 @@ static int __devinit mxt_touch_init(struct mxt_data *data)
 	snprintf(fw_path, MXT_MAX_FW_PATH, "%s%s",
 		MXT_FIRMWARE_INKERNEL_PATH, firmware_name);
 
-	tsp_debug_err(true, &client->dev, "%s\n", fw_path);
+	tsp_debug_init(true, &client->dev, "%s\n", fw_path);
 
 	ret = request_firmware(&fw, fw_path, &client->dev);
 	if (ret) {
@@ -2636,7 +2636,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 #if ENABLE_TOUCH_KEY
 	int  i = 0;
 #endif
-	tsp_debug_err(false, &client->dev, "%s\n", __func__);
+	tsp_debug_info(false, &client->dev, "%s\n", __func__);
 
 #ifdef CONFIG_OF
 	/* parse dt */

@@ -124,6 +124,6 @@ config SDFAT_STATISTICS
 	default y
 
 config SDFAT_UEVENT
-	bool "Enable uevent"
+	bool "enable uevent"
 	depends on SDFAT_FS
 	default y

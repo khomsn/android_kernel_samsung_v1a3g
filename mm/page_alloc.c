@@ -108,6 +108,19 @@ unsigned long dirty_balance_reserve __read_mostly;
 int percpu_pagelist_fraction;
 gfp_t gfp_allowed_mask __read_mostly = GFP_BOOT_MASK;
 
+static unsigned int boot_mode = 0;
+static int __init setup_bootmode(char *str)
+{
+	printk("%s: boot_mode is %u\n", __func__, boot_mode);
+	if (get_option(&str, &boot_mode)) {
+		printk("%s: boot_mode is %u\n", __func__, boot_mode);
+		return 0;
+	}
+
+	return -EINVAL;
+}
+early_param("bootmode", setup_bootmode);
+
 #ifdef CONFIG_PM_SLEEP
 /*
  * The following functions are used by the suspend/hibernate code to temporarily
@@ -1014,6 +1027,8 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype)
 			 */
 			if (unlikely(current_order >= (pageblock_order >> 1)) ||
 					start_migratetype == MIGRATE_RECLAIMABLE ||
+					start_migratetype == MIGRATE_UNMOVABLE ||
+					start_migratetype == MIGRATE_MOVABLE ||
 					page_group_by_mobility_disabled) {
 				unsigned long pages;
 				pages = move_freepages_block(zone, page,
@@ -1021,6 +1036,7 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype)
 
 				/* Claim the whole block if over half of it is free */
 				if (pages >= (1 << (pageblock_order-1)) ||
+						start_migratetype == MIGRATE_MOVABLE ||
 						page_group_by_mobility_disabled)
 					set_pageblock_migratetype(page,
 								start_migratetype);
@@ -1269,17 +1285,6 @@ void free_hot_cold_page(struct page *page, int cold)
 	unsigned long flags;
 	int migratetype;
 	int wasMlocked = __TestClearPageMlocked(page);
-
-#ifdef CONFIG_SCFS_LOWER_PAGECACHE_INVALIDATION
-	/*
-	   struct scfs_sb_info *sbi;
-
-	   if (PageScfslower(page) || PageNocache(page)) {
-	   sbi = SCFS_S(page->mapping->host->i_sb);
-	   sbi->scfs_lowerpage_reclaim_count++;
-	   }
-	 */
-#endif
 
 	if (!free_pages_prepare(page, 0))
 		return;
@@ -2388,9 +2393,9 @@ rebalance:
 	 * running out of options and have to consider going OOM
 	 */
 #ifdef CONFIG_SEC_OOM_KILLER
-#define SHOULD_CONSIDER_OOM !did_some_progress || time_after(jiffies, oom_invoke_timeout)
+#define SHOULD_CONSIDER_OOM (!did_some_progress || time_after(jiffies, oom_invoke_timeout)) && (boot_mode != 2)
 #else
-#define SHOULD_CONSIDER_OOM !did_some_progress
+#define SHOULD_CONSIDER_OOM !did_some_progress && (boot_mode != 2)
 #endif
 	if (SHOULD_CONSIDER_OOM) {
 		if ((gfp_mask & __GFP_FS) && !(gfp_mask & __GFP_NORETRY)) {
@@ -2711,7 +2716,7 @@ static inline void show_node(struct zone *zone)
 void si_meminfo(struct sysinfo *val)
 {
 	val->totalram = totalram_pages;
-	val->sharedram = 0;
+	val->sharedram = global_page_state(NR_SHMEM);
 	val->freeram = global_page_state(NR_FREE_PAGES);
 	val->bufferram = nr_blockdev_pages();
 	val->totalhigh = totalhigh_pages;
@@ -2727,6 +2732,7 @@ void si_meminfo_node(struct sysinfo *val, int nid)
 	pg_data_t *pgdat = NODE_DATA(nid);
 
 	val->totalram = pgdat->node_present_pages;
+	val->sharedram = node_page_state(nid, NR_SHMEM);
 	val->freeram = node_page_state(nid, NR_FREE_PAGES);
 #ifdef CONFIG_HIGHMEM
 	val->totalhigh = pgdat->node_zones[ZONE_HIGHMEM].present_pages;
@@ -5094,11 +5100,10 @@ void setup_per_zone_wmarks(void)
 			zone->watermark[WMARK_MIN] = min;
 		}
 
-		zone->watermark[WMARK_LOW] = min_wmark_pages(zone) +
+		zone->watermark[WMARK_LOW]  = min_wmark_pages(zone) +
 					low + (min >> 2);
 		zone->watermark[WMARK_HIGH] = min_wmark_pages(zone) +
 					low + (min >> 1);
-
 		setup_zone_migrate_reserve(zone);
 		spin_unlock_irqrestore(&zone->lock, flags);
 	}
@@ -5732,10 +5737,6 @@ static struct trace_print_flags pageflag_names[] = {
 #endif
 #ifdef CONFIG_MEMORY_FAILURE
 	{1UL << PG_hwpoison,		"hwpoison"	},
-#endif
-#ifdef CONFIG_SCFS_LOWER_PAGECACHE_INVALIDATION
-	{1UL << PG_scfslower,		"scfslower"	},
-	{1UL << PG_nocache,		"nocache"	},
 #endif
 	{-1UL,				NULL		},
 };

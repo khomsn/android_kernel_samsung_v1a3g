@@ -16,6 +16,7 @@
 
 #include <linux/init.h>
 #include <linux/export.h>
+#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/namei.h>
@@ -190,27 +191,9 @@ static int check_acl(struct inode *inode, int mask)
 	        return posix_acl_permission(inode, acl, mask & ~MAY_NOT_BLOCK);
 	}
 
-	acl = get_cached_acl(inode, ACL_TYPE_ACCESS);
-
-	/*
-	 * A filesystem can force a ACL callback by just never filling the
-	 * ACL cache. But normally you'd fill the cache either at inode
-	 * instantiation time, or on the first ->get_acl call.
-	 *
-	 * If the filesystem doesn't have a get_acl() function at all, we'll
-	 * just create the negative cache entry.
-	 */
-	if (acl == ACL_NOT_CACHED) {
-	        if (inode->i_op->get_acl) {
-			acl = inode->i_op->get_acl(inode, ACL_TYPE_ACCESS);
-			if (IS_ERR(acl))
-				return PTR_ERR(acl);
-		} else {
-		        set_cached_acl(inode, ACL_TYPE_ACCESS, NULL);
-		        return -EAGAIN;
-		}
-	}
-
+	acl = get_acl(inode, ACL_TYPE_ACCESS);
+	if (IS_ERR(acl))
+		return PTR_ERR(acl);
 	if (acl) {
 	        int error = posix_acl_permission(inode, acl, mask);
 	        posix_acl_release(acl);
@@ -228,10 +211,7 @@ static int acl_permission_check(struct inode *inode, int mask)
 {
 	unsigned int mode = inode->i_mode;
 
-	if (current_user_ns() != inode_userns(inode))
-		goto other_perms;
-
-	if (likely(current_fsuid() == inode->i_uid))
+	if (likely(uid_eq(current_fsuid(), inode->i_uid)))
 		mode >>= 6;
 	else {
 		if (IS_POSIXACL(inode) && (mode & S_IRWXG)) {
@@ -244,7 +224,6 @@ static int acl_permission_check(struct inode *inode, int mask)
 			mode >>= 3;
 	}
 
-other_perms:
 	/*
 	 * If the DACs are ok we don't need any capability check.
 	 */
@@ -280,10 +259,11 @@ int generic_permission(struct inode *inode, int mask)
 
 	if (S_ISDIR(inode->i_mode)) {
 		/* DACs are overridable for directories */
-		if (ns_capable(inode_userns(inode), CAP_DAC_OVERRIDE))
+		if (capable_wrt_inode_uidgid(inode, CAP_DAC_OVERRIDE))
 			return 0;
 		if (!(mask & MAY_WRITE))
-			if (ns_capable(inode_userns(inode), CAP_DAC_READ_SEARCH))
+			if (capable_wrt_inode_uidgid(inode,
+						     CAP_DAC_READ_SEARCH))
 				return 0;
 		return -EACCES;
 	}
@@ -293,7 +273,7 @@ int generic_permission(struct inode *inode, int mask)
 	 * at least one exec bit set.
 	 */
 	if (!(mask & MAY_EXEC) || (inode->i_mode & S_IXUGO))
-		if (ns_capable(inode_userns(inode), CAP_DAC_OVERRIDE))
+		if (capable_wrt_inode_uidgid(inode, CAP_DAC_OVERRIDE))
 			return 0;
 
 	/*
@@ -301,7 +281,7 @@ int generic_permission(struct inode *inode, int mask)
 	 */
 	mask &= MAY_READ | MAY_WRITE | MAY_EXEC;
 	if (mask == MAY_READ)
-		if (ns_capable(inode_userns(inode), CAP_DAC_READ_SEARCH))
+		if (capable_wrt_inode_uidgid(inode, CAP_DAC_READ_SEARCH))
 			return 0;
 
 	return -EACCES;
@@ -1511,7 +1491,8 @@ EXPORT_SYMBOL(full_name_hash);
  */
 static inline unsigned long hash_name(const char *name, unsigned int *hashp)
 {
-	unsigned long a, mask, hash, len;
+	unsigned long a, b, adata, bdata, mask, hash, len;
+	const struct word_at_a_time constants = WORD_AT_A_TIME_CONSTANTS;
 
 	hash = a = 0;
 	len = -sizeof(unsigned long);
@@ -1519,17 +1500,18 @@ static inline unsigned long hash_name(const char *name, unsigned int *hashp)
 		hash = (hash + a) * 9;
 		len += sizeof(unsigned long);
 		a = load_unaligned_zeropad(name+len);
-		/* Do we have any NUL or '/' bytes in this word? */
-		mask = has_zero(a) | has_zero(a ^ REPEAT_BYTE('/'));
-	} while (!mask);
+		b = a ^ REPEAT_BYTE('/');
+	} while (!(has_zero(a, &adata, &constants) | has_zero(b, &bdata, &constants)));
 
-	/* The mask *below* the first high bit set */
-	mask = (mask - 1) & ~mask;
-	mask >>= 7;
-	hash += a & mask;
+	adata = prep_zero_mask(a, adata, &constants);
+	bdata = prep_zero_mask(b, bdata, &constants);
+
+	mask = create_zero_mask(adata | bdata);
+
+	hash += a & zero_bytemask(mask);
 	*hashp = fold_hash(hash);
 
-	return len + count_masked_bytes(mask);
+	return len + find_zero(mask);
 }
 
 #else
@@ -1661,6 +1643,9 @@ static int path_init(int dfd, const char *name, unsigned int flags,
 	int retval = 0;
 	int fput_needed;
 	struct file *file;
+
+	if (!*name)
+		flags &= ~LOOKUP_RCU;
 
 	nd->last_type = LAST_ROOT; /* if there are only slashes... */
 	nd->flags = flags | LOOKUP_JUMPED;
@@ -1825,10 +1810,8 @@ static int path_lookupat(int dfd, const char *name,
 	if (!err) {
 		struct super_block *sb = nd->inode->i_sb;
 		if (sb->s_flags & MS_RDONLY) {
-			if (d_is_su(nd->path.dentry) && !su_visible()) {
-				path_put(&nd->path);
+			if (d_is_su(nd->path.dentry) && !su_visible())
 				err = -ENOENT;
-			}
 		}
 	}
 
@@ -2029,19 +2012,15 @@ static int user_path_parent(int dfd, const char __user *path,
  */
 static inline int check_sticky(struct inode *dir, struct inode *inode)
 {
-	uid_t fsuid = current_fsuid();
+	kuid_t fsuid = current_fsuid();
 
 	if (!(dir->i_mode & S_ISVTX))
 		return 0;
-	if (current_user_ns() != inode_userns(inode))
-		goto other_userns;
-	if (inode->i_uid == fsuid)
+	if (uid_eq(inode->i_uid, fsuid))
 		return 0;
-	if (dir->i_uid == fsuid)
+	if (uid_eq(dir->i_uid, fsuid))
 		return 0;
-
-other_userns:
-	return !ns_capable(inode_userns(inode), CAP_FOWNER);
+	return !capable_wrt_inode_uidgid(inode, CAP_FOWNER);
 }
 
 /*
@@ -2638,8 +2617,7 @@ int vfs_mknod2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry, u
 	if (error)
 		return error;
 
-	if ((S_ISCHR(mode) || S_ISBLK(mode)) &&
-	    !ns_capable(inode_userns(dir), CAP_MKNOD))
+	if ((S_ISCHR(mode) || S_ISBLK(mode)) && !capable(CAP_MKNOD))
 		return -EPERM;
 
 	if (!dir->i_op->mknod)

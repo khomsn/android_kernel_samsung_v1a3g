@@ -10,6 +10,7 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/cpu.h>
 #include <linux/cpuidle.h>
 #include <linux/cpu_pm.h>
 #include <linux/io.h>
@@ -28,6 +29,7 @@
 #include <asm/smp_scu.h>
 #include <asm/suspend.h>
 #include <asm/unified.h>
+#include <asm/cpuidle.h>
 #include <asm/cputype.h>
 #include <asm/cacheflush.h>
 #include <asm/system_misc.h>
@@ -126,9 +128,6 @@ module_param_named(log_en, log_en, uint, 0644);
 extern int bt_is_running;
 extern void bt_uart_rts_ctrl(int flag);
 #endif
-static int exynos_enter_idle(struct cpuidle_device *dev,
-			struct cpuidle_driver *drv,
-			      int index);
 #if defined (CONFIG_EXYNOS_CPUIDLE_C2)
 static int exynos_enter_c2(struct cpuidle_device *dev,
 				 struct cpuidle_driver *drv,
@@ -313,14 +312,7 @@ static int __maybe_unused exynos_check_enter_mode(void)
 }
 
 static struct cpuidle_state exynos5_cpuidle_set[] __initdata = {
-	[0] = {
-		.enter			= exynos_enter_idle,
-		.exit_latency		= 1,
-		.target_residency	= 1000,
-		.flags			= CPUIDLE_FLAG_TIME_VALID,
-		.name			= "C1",
-		.desc			= "ARM clock gating(WFI)",
-	},
+	[0] = ARM_CPUIDLE_WFI_STATE,
 	[1] = {
 #if defined (CONFIG_EXYNOS_CPUIDLE_C2)
 		.enter			= exynos_enter_c2,
@@ -344,8 +336,9 @@ static struct cpuidle_state exynos5_cpuidle_set[] __initdata = {
 static DEFINE_PER_CPU(struct cpuidle_device, exynos_cpuidle_device);
 
 static struct cpuidle_driver exynos_idle_driver = {
-	.name		= "exynos_idle",
-	.owner		= THIS_MODULE,
+	.name			= "exynos_idle",
+	.owner			= THIS_MODULE,
+	.en_core_tk_irqen	= 1,
 };
 
 /* Ext-GIC nIRQ/nFIQ is the only wakeup source in AFTR */
@@ -420,19 +413,15 @@ static int exynos_enter_core0_aftr(struct cpuidle_device *dev,
 				struct cpuidle_driver *drv,
 				int index)
 {
-	struct timeval before, after;
-	int idle_time;
 	unsigned long tmp;
 	unsigned int ret = 0;
 	unsigned int cpuid = smp_processor_id();
 
-	local_irq_disable();
 	sec_debug_task_log_msg(cpuid, "aftr+");
 #ifdef CONFIG_SEC_PM_DEBUG
 	if (log_en & ENABLE_C3_AFTR)
 		pr_info("+++aftr\n");
 #endif
-	do_gettimeofday(&before);
 
 	exynos_set_wakeupmask();
 
@@ -475,18 +464,12 @@ static int exynos_enter_core0_aftr(struct cpuidle_device *dev,
 	/* Clear wakeup state register */
 	__raw_writel(0x0, EXYNOS_WAKEUP_STAT);
 
-	do_gettimeofday(&after);
 #ifdef CONFIG_SEC_PM_DEBUG
 	if (log_en & ENABLE_C3_AFTR)
 		pr_info("---aftr\n");
 #endif
 	sec_debug_task_log_msg(cpuid, "aftr-");
 
-	local_irq_enable();
-	idle_time = (after.tv_sec - before.tv_sec) * USEC_PER_SEC +
-		    (after.tv_usec - before.tv_usec);
-
-	dev->last_residency = idle_time;
 	return index;
 }
 
@@ -662,27 +645,6 @@ early_wakeup:
 	return index;
 }
 
-static int exynos_enter_idle(struct cpuidle_device *dev,
-				struct cpuidle_driver *drv,
-				int index)
-{
-	struct timeval before, after;
-	int idle_time;
-
-	local_irq_disable();
-	do_gettimeofday(&before);
-
-	cpu_do_idle();
-
-	do_gettimeofday(&after);
-	local_irq_enable();
-	idle_time = (after.tv_sec - before.tv_sec) * USEC_PER_SEC +
-		    (after.tv_usec - before.tv_usec);
-
-	dev->last_residency = idle_time;
-	return index;
-}
-
 static unsigned int exynos_get_core_num(void)
 {
 	unsigned int cluster_id = read_cpuid_mpidr() & 0x100;
@@ -729,17 +691,17 @@ static int exynos_enter_lowpower(struct cpuidle_device *dev,
 		return exynos_enter_c2(dev, drv, (new_index - 1));
 
 	/* This mode only can be entered when other core's are offline */
-	if (num_online_cpus() > 1)
+	if (num_online_cpus() > 1 || cpu_maps_is_updating())
 #if defined (CONFIG_EXYNOS_CPUIDLE_C2)
 		return exynos_enter_c2(dev, drv, (new_index - 1));
 #else
-		return exynos_enter_idle(dev, drv, (new_index - 2));
+		return arm_cpuidle_simple_enter(dev, drv, (new_index - 2));
 #endif
 	if (exynos_get_core_num() > 1)
 #if defined (CONFIG_EXYNOS_CPUIDLE_C2)
 		return exynos_enter_c2(dev, drv, (new_index - 1));
 #else
-		return exynos_enter_idle(dev, drv, (new_index - 2));
+		return arm_cpuidle_simple_enter(dev, drv, (new_index - 2));
 #endif
 
 #ifdef CONFIG_SEC_PM
@@ -747,7 +709,7 @@ static int exynos_enter_lowpower(struct cpuidle_device *dev,
 		if (enable_mask & ENABLE_C3_AFTR)
 			return exynos_enter_core0_aftr(dev, drv, new_index);
 		else
-			return exynos_enter_idle(dev, drv, (new_index - 2));
+			return arm_cpuidle_simple_enter(dev, drv, (new_index - 2));
 	} else {
 		return exynos_enter_core0_lpa(dev, drv, new_index);
 	}
@@ -772,11 +734,11 @@ static int exynos_enter_c2(struct cpuidle_device *dev,
 
 #ifdef CONFIG_SEC_PM
 	if (!(enable_mask & ENABLE_C2))
-		return exynos_enter_idle(dev, drv, (index - 1));
+		return arm_cpuidle_simple_enter(dev, drv, (index - 1));
 #endif
 	/* HACK : Disabling C2 on KFC for EXYNOS5420 */
 	if (soc_is_exynos5420())
-	        return exynos_enter_idle(dev, drv, (index - 1));
+	        return arm_cpuidle_simple_enter(dev, drv, (index - 1));
 
 	local_irq_disable();
 	do_gettimeofday(&before);

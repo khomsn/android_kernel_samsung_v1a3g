@@ -125,28 +125,18 @@
 
 #define EXYNOS_GPU_NUMBER	4
 
-static unsigned int HOT_NORMAL_TEMP = 85;
-static unsigned int HOT_CRITICAL_TEMP = 110;
-static unsigned int HOT_95 = 85;
-static unsigned int HOT_109 = 109;
-static unsigned int HOT_110 = 110;
-static unsigned int MEM_TH_TEMP1 = 70;
-static unsigned int MEM_TH_TEMP2 = 80;
-static unsigned int GPU_TH_TEMP1 = 85;
-static unsigned int GPU_TH_TEMP2 = 90;
-static unsigned int GPU_TH_TEMP3 = 95;
-static unsigned int GPU_TH_TEMP4 = 100;
-static unsigned int GPU_TH_TEMP5 = 105;
-
-module_param_named(tmu_cpu_normal, HOT_NORMAL_TEMP, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_cpu_critical, HOT_CRITICAL_TEMP, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_mif_normal, MEM_TH_TEMP1, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_mif_hot, MEM_TH_TEMP2, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_gpu_temp1, GPU_TH_TEMP1, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_gpu_temp2, GPU_TH_TEMP2, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_gpu_temp3, GPU_TH_TEMP3, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_gpu_temp4, GPU_TH_TEMP4, uint, S_IWUSR | S_IRUGO);
-module_param_named(tmu_gpu_temp5, GPU_TH_TEMP5, uint, S_IWUSR | S_IRUGO);
+#define HOT_NORMAL_TEMP		95
+#define HOT_CRITICAL_TEMP	110
+#define HOT_95			95
+#define HOT_109			104
+#define HOT_110			105
+#define MEM_TH_TEMP1		75
+#define MEM_TH_TEMP2		85
+#define GPU_TH_TEMP1		90
+#define GPU_TH_TEMP2		95
+#define GPU_TH_TEMP3		100
+#define GPU_TH_TEMP4		105
+#define GPU_TH_TEMP5		110
 
 #define TYPE_CPU		1
 #define TYPE_GPU		2
@@ -163,7 +153,7 @@ module_param_named(tmu_gpu_temp5, GPU_TH_TEMP5, uint, S_IWUSR | S_IRUGO);
 
 #define GAP_WITH_RISE		2
 #define MAX_FREQ		2300
-#define MIN_FREQ		250
+#define MIN_FREQ		400
 
 #ifdef CONFIG_THERMAL_DEBUG
 #define DTM_DBG(x...) printk(x)
@@ -296,9 +286,7 @@ static void exynos_report_trigger(void)
 			break;
 	}
 
-#ifdef CONFIG_THERMAL_DEBUG
 	pr_info("[TMU-IRQ] IRQ mode=%d\n",i);
-#endif
 	if (th_zone->mode == THERMAL_DEVICE_ENABLED) {
 		if (i > 0)
 			th_zone->therm_dev->polling_delay = ACTIVE_INTERVAL;
@@ -739,9 +727,7 @@ void exynos_tmu_call_notifier(enum tmu_noti_state_t cur_state)
 		else
 			blocking_notifier_call_chain(&exynos_tmu_notifier, cur_state, &tmu_old_state);
 
-#ifdef CONFIG_THERMAL_DEBUG
 		pr_info("tmu temperature state %d to %d \n", tmu_old_state, cur_state);
-#endif
 		tmu_old_state = cur_state;
 	}
 }
@@ -1134,9 +1120,7 @@ static void exynos_check_mif_noti_state(int temp)
 		cur_state = MEM_TH_LV3;
 
 	if (cur_state != mif_old_state) {
-#ifdef CONFIG_THERMAL_DEBUG
 		pr_info("tmu temperature mif state %d to %d \n", mif_old_state, cur_state);
-#endif
 #if 1 /* ONLY IF the normal and hot mem temp is same, skip duplicate setting */
 		if ((cur_state == MEM_TH_LV3) ||
 			((cur_state == MEM_TH_LV2) && (mif_old_state == MEM_TH_LV3)) ||

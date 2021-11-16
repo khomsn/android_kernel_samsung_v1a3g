@@ -29,6 +29,7 @@
 #include <linux/fault-inject.h>
 #include <linux/list_sort.h>
 #include <linux/delay.h>
+#include <linux/ratelimit.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
@@ -403,6 +404,42 @@ void blk_drain_queue(struct request_queue *q, bool drain_all)
 }
 
 /**
+ * blk_queue_bypass_start - enter queue bypass mode
+ * @q: queue of interest
+ *
+ * In bypass mode, only the dispatch FIFO queue of @q is used.  This
+ * function makes @q enter bypass mode and drains all requests which were
+ * issued before.  On return, it's guaranteed that no request has ELVPRIV
+ * set.
+ */
+void blk_queue_bypass_start(struct request_queue *q)
+{
+	spin_lock_irq(q->queue_lock);
+	q->bypass_depth++;
+	queue_flag_set(QUEUE_FLAG_BYPASS, q);
+	spin_unlock_irq(q->queue_lock);
+
+	blk_drain_queue(q, false);
+}
+EXPORT_SYMBOL_GPL(blk_queue_bypass_start);
+
+/**
+ * blk_queue_bypass_end - leave queue bypass mode
+ * @q: queue of interest
+ *
+ * Leave bypass mode and restore the normal queueing behavior.
+ */
+void blk_queue_bypass_end(struct request_queue *q)
+{
+	spin_lock_irq(q->queue_lock);
+	if (!--q->bypass_depth)
+		queue_flag_clear(QUEUE_FLAG_BYPASS, q);
+	WARN_ON_ONCE(q->bypass_depth < 0);
+	spin_unlock_irq(q->queue_lock);
+}
+EXPORT_SYMBOL_GPL(blk_queue_bypass_end);
+
+/**
  * blk_cleanup_queue - shutdown a request queue
  * @q: request queue to shutdown
  *
@@ -469,7 +506,7 @@ static int blk_init_free_list(struct request_queue *q)
 
 struct request_queue *blk_alloc_queue(gfp_t gfp_mask)
 {
-	return blk_alloc_queue_node(gfp_mask, -1);
+	return blk_alloc_queue_node(gfp_mask, NUMA_NO_NODE);
 }
 EXPORT_SYMBOL(blk_alloc_queue);
 
@@ -569,7 +606,7 @@ EXPORT_SYMBOL(blk_alloc_queue_node);
 
 struct request_queue *blk_init_queue(request_fn_proc *rfn, spinlock_t *lock)
 {
-	return blk_init_queue_node(rfn, lock, -1);
+	return blk_init_queue_node(rfn, lock, NUMA_NO_NODE);
 }
 EXPORT_SYMBOL(blk_init_queue);
 
@@ -810,7 +847,7 @@ retry:
 			 */
 			if (!ioc && !retried) {
 				spin_unlock_irq(q->queue_lock);
-				create_io_context(current, gfp_mask, q->node);
+				create_io_context(gfp_mask, q->node);
 				spin_lock_irq(q->queue_lock);
 				retried = true;
 				goto retry;
@@ -861,8 +898,7 @@ retry:
 	 * Also, lookup icq while holding queue_lock.  If it doesn't exist,
 	 * it will be created after releasing queue_lock.
 	 */
-	if (blk_rq_should_init_elevator(bio) &&
-	    !test_bit(QUEUE_FLAG_ELVSWITCH, &q->queue_flags)) {
+	if (blk_rq_should_init_elevator(bio) && !blk_queue_bypass(q)) {
 		rw_flags |= REQ_ELVPRIV;
 		rl->elvpriv++;
 		if (et->icq_cache && ioc)
@@ -875,7 +911,9 @@ retry:
 
 	/* create icq if missing */
 	if ((rw_flags & REQ_ELVPRIV) && unlikely(et->icq_cache && !icq)) {
-		icq = ioc_create_icq(q, gfp_mask);
+		ioc = create_io_context(gfp_mask, q->node);
+		if (ioc)
+			icq = ioc_create_icq(ioc, q, gfp_mask);
 		if (!icq)
 			goto fail_icq;
 	}
@@ -963,7 +1001,7 @@ static struct request *get_request_wait(struct request_queue *q, int rw_flags,
 		 * up to a big batch of them for a small period time.
 		 * See ioc_batching, ioc_set_batching
 		 */
-		create_io_context(current, GFP_NOIO, q->node);
+		create_io_context(GFP_NOIO, q->node);
 		ioc_set_batching(q, current->io_context);
 
 		spin_lock_irq(q->queue_lock);
@@ -1347,6 +1385,11 @@ void blk_queue_bio(struct request_queue *q, struct bio *bio)
 	 */
 	blk_queue_bounce(q, &bio);
 
+	if (bio_integrity_enabled(bio) && bio_integrity_prep(bio)) {
+		bio_endio(bio, -EIO);
+		return;
+	}
+
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
 		spin_lock_irq(q->queue_lock);
 		where = ELEVATOR_INSERT_FLUSH;
@@ -1566,7 +1609,7 @@ generic_make_request_checks(struct bio *bio)
 		goto end_io;
 	}
 
-	if (unlikely(!(bio->bi_rw & REQ_DISCARD) &&
+	if (unlikely(!(bio->bi_rw & (REQ_DISCARD | REQ_SANITIZE)) &&
 		     nr_sectors > queue_max_hw_sectors(q))) {
 		printk(KERN_ERR "bio too big device %s (%u > %u)\n",
 		       bdevname(bio->bi_bdev, b),
@@ -1586,9 +1629,6 @@ generic_make_request_checks(struct bio *bio)
 	 * of partition p to block n+start(p) of the disk.
 	 */
 	blk_partition_remap(bio);
-
-	if (bio_integrity_enabled(bio) && bio_integrity_prep(bio))
-		goto end_io;
 
 	if (bio_check_eod(bio, nr_sectors))
 		goto end_io;
@@ -1610,6 +1650,14 @@ generic_make_request_checks(struct bio *bio)
 	    (!blk_queue_discard(q) ||
 	     ((bio->bi_rw & REQ_SECURE) &&
 	      !blk_queue_secdiscard(q)))) {
+		err = -EOPNOTSUPP;
+		goto end_io;
+	}
+
+	if ((bio->bi_rw & REQ_SANITIZE) &&
+	    (!blk_queue_sanitize(q))) {
+		pr_info("%s - got a SANITIZE request but the queue "
+		       "doesn't support sanitize requests", __func__);
 		err = -EOPNOTSUPP;
 		goto end_io;
 	}
@@ -1719,7 +1767,8 @@ void submit_bio(int rw, struct bio *bio)
 	 * If it's a regular read/write or a barrier with data attached,
 	 * go through the normal accounting stuff before submission.
 	 */
-	if (bio_has_data(bio) && !(rw & REQ_DISCARD)) {
+	if (bio_has_data(bio) &&
+	    (!(rw & (REQ_DISCARD | REQ_SANITIZE)))) {
 		if (rw & WRITE) {
 			count_vm_events(PGPGOUT, count);
 		} else {
@@ -1765,7 +1814,7 @@ EXPORT_SYMBOL(submit_bio);
  */
 int blk_rq_check_limits(struct request_queue *q, struct request *rq)
 {
-	if (rq->cmd_flags & REQ_DISCARD)
+	if (rq->cmd_flags & (REQ_DISCARD | REQ_SANITIZE))
 		return 0;
 
 	if (blk_rq_sectors(rq) > queue_max_sectors(q) ||
@@ -2154,9 +2203,11 @@ bool blk_update_request(struct request *req, int error, unsigned int nr_bytes)
 			error_type = "I/O";
 			break;
 		}
-		printk(KERN_ERR "end_request: %s error, dev %s, sector %llu\n",
-		       error_type, req->rq_disk ? req->rq_disk->disk_name : "?",
-		       (unsigned long long)blk_rq_pos(req));
+		printk_ratelimited(
+			KERN_ERR "end_request: %s error, dev %s, sector %llu\n",
+			error_type,
+			req->rq_disk ? req->rq_disk->disk_name : "?",
+			(unsigned long long)blk_rq_pos(req));
 	}
 
 	blk_account_io_completion(req, nr_bytes);

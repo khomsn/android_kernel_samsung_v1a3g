@@ -1584,7 +1584,7 @@ static void *get_partial_node(struct kmem_cache *s,
 /*
  * Get a page from somewhere. Search in increasing NUMA distances.
  */
-static void *get_any_partial(struct kmem_cache *s, gfp_t flags,
+static struct page *get_any_partial(struct kmem_cache *s, gfp_t flags,
 		struct kmem_cache_cpu *c)
 {
 #ifdef CONFIG_NUMA
@@ -3955,9 +3955,9 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
 			}
 			return s;
 		}
+		kfree(n);
 		kfree(s);
 	}
-	kfree(n);
 err:
 	up_write(&slub_lock);
 
@@ -4470,7 +4470,7 @@ static ssize_t show_slab_objects(struct kmem_cache *s,
 {
 	unsigned long total = 0;
 	int node;
-	int x =0;
+	int x;
 	unsigned long *nodes;
 	unsigned long *per_cpu;
 
@@ -4509,10 +4509,11 @@ static ssize_t show_slab_objects(struct kmem_cache *s,
 					WARN_ON_ONCE(1);
 				else if (flags & SO_OBJECTS)
 					WARN_ON_ONCE(1);
-				else
+				else {
 					x = page->pages;
-				total += x;
-				nodes[node] += x;
+					total += x;
+					nodes[node] += x;
+				}
 			}
 			per_cpu[node]++;
 		}

@@ -256,7 +256,7 @@ static inline void __sdfat_submit_bio_write(struct bio *bio,
 {
 	int write_flags = wbc_to_write_flags(wbc);
 
-	submit_bio(write_flags, bio);
+	submit_bio(WRITE | write_flags, bio);
 }
 
 static inline unsigned int __sdfat_full_name_hash(const struct dentry *unused, const char *name, unsigned int len)
@@ -793,45 +793,6 @@ static struct dentry *sdfat_lookup(struct inode *dir, struct dentry *dentry,
 	return __sdfat_lookup(dir, dentry);
 }
 #endif
-
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 5, 0)
-	/* NOTHING NOW */
-#else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 5, 0) */
-#define GLOBAL_ROOT_UID (0)
-#define GLOBAL_ROOT_GID (0)
-
-static inline bool uid_eq(uid_t left, uid_t right)
-{
-	return left == right;
-}
-
-static inline bool gid_eq(gid_t left, gid_t right)
-{
-	return left == right;
-}
-
-static inline uid_t from_kuid_munged(struct user_namespace *to, uid_t kuid)
-{
-	return kuid;
-}
-
-static inline gid_t from_kgid_munged(struct user_namespace *to, gid_t kgid)
-{
-	return kgid;
-}
-
-static inline uid_t make_kuid(struct user_namespace *from, uid_t uid)
-{
-	return uid;
-}
-
-static inline gid_t make_kgid(struct user_namespace *from, gid_t gid)
-{
-	return gid;
-}
-#endif
-
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0)
 static struct dentry *__d_make_root(struct inode *root_inode)
@@ -5155,13 +5116,11 @@ static int __init sdfat_init_inodecache(void)
 
 static void sdfat_destroy_inodecache(void)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
 	/*
 	 * Make sure all delayed rcu free inodes are flushed before we
 	 * destroy cache.
 	 */
 	rcu_barrier();
-#endif
 	kmem_cache_destroy(sdfat_inode_cachep);
 }
 

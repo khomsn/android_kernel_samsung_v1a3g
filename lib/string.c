@@ -26,6 +26,7 @@
 #include <linux/export.h>
 #include <linux/bug.h>
 #include <linux/errno.h>
+#include <linux/memcopy.h>
 
 #ifndef __HAVE_ARCH_STRNICMP
 /**
@@ -328,6 +329,24 @@ char *strchr(const char *s, int c)
 	return (char *)s;
 }
 EXPORT_SYMBOL(strchr);
+#endif
+
+#ifndef __HAVE_ARCH_STRCHRNUL
+/**
+ * strchrnul - Find and return a character in a string, or end of string
+ * @s: The string to be searched
+ * @c: The character to search for
+ *
+ * Returns pointer to first occurrence of 'c' in s. If c is not found, then
+ * return a pointer to the null byte at the end of s.
+ */
+char *strchrnul(const char *s, int c)
+{
+	while (*s && *s != (char)c)
+		s++;
+	return (char *)s;
+}
+EXPORT_SYMBOL(strchrnul);
 #endif
 
 #ifndef __HAVE_ARCH_STRRCHR
@@ -643,11 +662,11 @@ EXPORT_SYMBOL(memzero_explicit);
  */
 void *memcpy(void *dest, const void *src, size_t count)
 {
-	char *tmp = dest;
-	const char *s = src;
+	unsigned long dstp = (unsigned long)dest; 
+	unsigned long srcp = (unsigned long)src; 
 
-	while (count--)
-		*tmp++ = *s++;
+	/* Copy from the beginning to the end */ 
+	mem_copy_fwd(dstp, srcp, count); 
 	return dest;
 }
 EXPORT_SYMBOL(memcpy);
@@ -664,21 +683,15 @@ EXPORT_SYMBOL(memcpy);
  */
 void *memmove(void *dest, const void *src, size_t count)
 {
-	char *tmp;
-	const char *s;
+	unsigned long dstp = (unsigned long)dest; 
+	unsigned long srcp = (unsigned long)src; 
 
-	if (dest <= src) {
-		tmp = dest;
-		s = src;
-		while (count--)
-			*tmp++ = *s++;
+	if (dest - src >= count) { 
+		/* Copy from the beginning to the end */ 
+		mem_copy_fwd(dstp, srcp, count); 
 	} else {
-		tmp = dest;
-		tmp += count;
-		s = src;
-		s += count;
-		while (count--)
-			*--tmp = *--s;
+		/* Copy from the end to the beginning */ 
+		mem_copy_bwd(dstp, srcp, count); 
 	}
 	return dest;
 }
@@ -704,6 +717,26 @@ int memcmp(const void *cs, const void *ct, size_t count)
 	return res;
 }
 EXPORT_SYMBOL(memcmp);
+#endif
+
+#ifndef __HAVE_ARCH_BCMP
+/**
+ * bcmp - returns 0 if and only if the buffers have identical contents.
+ * @a: pointer to first buffer.
+ * @b: pointer to second buffer.
+ * @len: size of buffers.
+ *
+ * The sign or magnitude of a non-zero return value has no particular
+ * meaning, and architectures may implement their own more efficient bcmp(). So
+ * while this particular implementation is a simple (tail) call to memcmp, do
+ * not rely on anything but whether the return value is zero or non-zero.
+ */
+#undef bcmp
+int bcmp(const void *a, const void *b, size_t len)
+{
+	return memcmp(a, b, len);
+}
+EXPORT_SYMBOL(bcmp);
 #endif
 
 #ifndef __HAVE_ARCH_MEMSCAN

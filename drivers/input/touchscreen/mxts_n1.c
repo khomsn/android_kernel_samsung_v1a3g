@@ -730,7 +730,7 @@ static void mxt_report_input_data(struct mxt_data *data)
 #if TSP_BOOSTER
 			booster_restart = true;
 #endif
-#endif
+#endif /*CONFIG_SAMSUNG_PRODUCT_SHIP*/
 		}
 		else if (data->fingers[i].state == MXT_STATE_RELEASE) {
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
@@ -752,8 +752,9 @@ static void mxt_report_input_data(struct mxt_data *data)
 				0,0,0
 #endif /*TSP_USE_SHAPETOUCH*/
 			, data->fingers[i].mcount);
-#endif
+#endif /*CONFIG_SAMSUNG_PRODUCT_SHIP*/
 		}
+
 
 		if (data->fingers[i].state == MXT_STATE_RELEASE) {
 			data->fingers[i].state = MXT_STATE_INACTIVE;
@@ -801,7 +802,7 @@ static void mxt_release_all_finger(struct mxt_data *data)
 		count++;
 	}
 	if (count) {
-		tsp_debug_err(true, &data->client->dev, "%s\n", __func__);
+		tsp_debug_info(true, &data->client->dev, "%s\n", __func__);
 		mxt_report_input_data(data);
 	}
 }
@@ -1691,7 +1692,7 @@ static void mxt_handle_T62_object(struct mxt_data *data)
 		tsp_debug_err(true, &data->client->dev, "%s: failed to write T62 object.\n",
 				__func__);
 	else
-		tsp_debug_err(true, &data->client->dev, "%s: Setting T62 report disable.\n",
+		tsp_debug_info(true, &data->client->dev, "%s: Setting T62 report disable.\n",
 				__func__);
 }
 static void mxt_handle_init_data(struct mxt_data *data)
@@ -2330,7 +2331,7 @@ static int __devinit mxt_touch_init(struct mxt_data *data, bool nowait)
 		snprintf(fw_path, MXT_MAX_FW_PATH, "%s%s",
 			MXT_FIRMWARE_INKERNEL_PATH, firmware_name);
 
-		tsp_debug_err(true, &client->dev, "%s\n", fw_path);
+		tsp_debug_info(true, &client->dev, "%s\n", fw_path);
 
 		ret = request_firmware(&fw, fw_path, &client->dev);
 		if (ret) {

@@ -417,9 +417,13 @@ static int usb_unbind_interface(struct device *dev)
 int usb_driver_claim_interface(struct usb_driver *driver,
 				struct usb_interface *iface, void *priv)
 {
-	struct device *dev = &iface->dev;
+	struct device *dev;
 	int retval = 0;
 
+	if (!iface)
+		return -ENODEV;
+
+	dev = &iface->dev;
 	if (dev->driver)
 		return -EBUSY;
 
@@ -446,21 +450,6 @@ int usb_driver_claim_interface(struct usb_driver *driver,
 	 */
 	if (device_is_registered(dev))
 		retval = device_bind_driver(dev);
-
-	if (retval) {
-		dev->driver = NULL;
-		usb_set_intfdata(iface, NULL);
-		iface->needs_remote_wakeup = 0;
-		iface->condition = USB_INTERFACE_UNBOUND;
-
-		/*
-		 * Unbound interfaces are always runtime-PM-disabled
-		 * and runtime-PM-suspended
-		 */
-		if (driver->supports_autosuspend)
-			pm_runtime_disable(dev);
-		pm_runtime_set_suspended(dev);
-	}
 
 	return retval;
 }
@@ -549,14 +538,15 @@ int usb_match_one_id_intf(struct usb_device *dev,
 			  struct usb_host_interface *intf,
 			  const struct usb_device_id *id)
 {
-	/* The interface class, subclass, and protocol should never be
+	/* The interface class, subclass, protocol and number should never be
 	 * checked for a match if the device class is Vendor Specific,
 	 * unless the match record specifies the Vendor ID. */
 	if (dev->descriptor.bDeviceClass == USB_CLASS_VENDOR_SPEC &&
 			!(id->match_flags & USB_DEVICE_ID_MATCH_VENDOR) &&
 			(id->match_flags & (USB_DEVICE_ID_MATCH_INT_CLASS |
 				USB_DEVICE_ID_MATCH_INT_SUBCLASS |
-				USB_DEVICE_ID_MATCH_INT_PROTOCOL)))
+				USB_DEVICE_ID_MATCH_INT_PROTOCOL |
+				USB_DEVICE_ID_MATCH_INT_NUMBER)))
 		return 0;
 
 	if ((id->match_flags & USB_DEVICE_ID_MATCH_INT_CLASS) &&
@@ -569,6 +559,10 @@ int usb_match_one_id_intf(struct usb_device *dev,
 
 	if ((id->match_flags & USB_DEVICE_ID_MATCH_INT_PROTOCOL) &&
 	    (id->bInterfaceProtocol != intf->desc.bInterfaceProtocol))
+		return 0;
+
+	if ((id->match_flags & USB_DEVICE_ID_MATCH_INT_NUMBER) &&
+	    (id->bInterfaceNumber != intf->desc.bInterfaceNumber))
 		return 0;
 
 	return 1;

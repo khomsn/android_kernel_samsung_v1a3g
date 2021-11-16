@@ -43,6 +43,8 @@ struct inet_skb_parm {
 #define IPSKB_FRAG_COMPLETE	BIT(3)
 #define IPSKB_REROUTED		BIT(4)
 #define IPSKB_DOREDIRECT	BIT(5)
+
+	u16			frag_max_size;
 };
 
 static inline unsigned int ip_hdrlen(const struct sk_buff *skb)
@@ -167,7 +169,7 @@ struct ip_reply_arg {
 						/* -1 if not needed */ 
 	int	    bound_dev_if;
 	u8  	    tos;
-	uid_t	    uid;
+	kuid_t	    uid;
 }; 
 
 #define IP_REPLY_ARG_NOSRCCHECK 1

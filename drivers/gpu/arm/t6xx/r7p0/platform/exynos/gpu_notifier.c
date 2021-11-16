@@ -287,10 +287,7 @@ static int pm_callback_runtime_on(struct kbase_device *kbdev)
 	gpu_control_enable_clock(kbdev);
 
 	pm_callback_dvfs_on(kbdev);
-#ifdef CONFIG_MALI_T6XX_DVFS
-	if (kbase_platform_dvfs_enable(true, MALI_DVFS_START_FREQ) != MALI_TRUE)
-		return -EPERM;
-#endif
+
 	aclk_g3d = clk_get(dev, "aclk_g3d");
 	if (IS_ERR(aclk_g3d)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "failed to clk_get [aclk_g3d]\n");

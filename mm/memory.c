@@ -120,7 +120,7 @@ static int __init init_zero_pfn(void)
 	zero_pfn = page_to_pfn(ZERO_PAGE(0));
 	return 0;
 }
-core_initcall(init_zero_pfn);
+early_initcall(init_zero_pfn);
 
 
 #if defined(SPLIT_RSS_COUNTING)
@@ -407,7 +407,7 @@ static void free_pte_range(struct mmu_gather *tlb, pmd_t *pmd,
 	pgtable_t token = pmd_pgtable(*pmd);
 	pmd_clear(pmd);
 	pte_free_tlb(tlb, token, addr);
-	tlb->mm->nr_ptes--;
+	atomic_long_dec(&tlb->mm->nr_ptes);
 }
 
 static inline void free_pmd_range(struct mmu_gather *tlb, pud_t *pud,
@@ -600,7 +600,7 @@ int __pte_alloc(struct mm_struct *mm, struct vm_area_struct *vma,
 	spin_lock(&mm->page_table_lock);
 	wait_split_huge_page = 0;
 	if (likely(pmd_none(*pmd))) {	/* Has another populated it ? */
-		mm->nr_ptes++;
+		atomic_long_inc(&mm->nr_ptes);
 		pmd_populate(mm, pmd, new);
 		new = NULL;
 	} else if (unlikely(pmd_trans_splitting(*pmd)))
@@ -1746,6 +1746,19 @@ int __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 			}
 			pte_unmap(pte);
 			goto next_page;
+		}
+
+		if (use_user_accessible_timers()) {
+			if (!vma && in_user_timers_area(mm, start)) {
+				int goto_next_page = 0;
+				int user_timer_ret = get_user_timer_page(vma,
+					mm, start, gup_flags, pages, i,
+					&goto_next_page);
+				if (goto_next_page)
+					goto next_page;
+				else
+					return user_timer_ret;
+			}
 		}
 
 		if (!vma ||
@@ -2983,7 +2996,6 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	delayacct_set_flag(DELAYACCT_PF_SWAPIN);
 	page = lookup_swap_cache(entry);
 	if (!page) {
-		grab_swap_token(mm); /* Contend for token _before_ read-in */
 		page = swapin_readahead(entry,
 					GFP_HIGHUSER_MOVABLE, vma, address);
 		if (!page) {
@@ -3017,6 +3029,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 #endif
 
 	locked = lock_page_or_retry(page, mm, flags);
+
 	delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 	if (!locked) {
 		ret |= VM_FAULT_RETRY;
@@ -3091,7 +3104,8 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	mem_cgroup_commit_charge_swapin(page, ptr);
 
 	swap_free(entry);
-	if (vm_swap_full() || (vma->vm_flags & VM_LOCKED) || PageMlocked(page))
+	if ((PageSwapCache(page) && vm_swap_full(page_swap_info(page))) ||
+		(vma->vm_flags & VM_LOCKED) || PageMlocked(page))
 		try_to_free_swap(page);
 	unlock_page(page);
 	if (swapcache) {

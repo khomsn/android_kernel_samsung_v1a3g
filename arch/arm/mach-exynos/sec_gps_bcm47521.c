@@ -152,11 +152,11 @@ static irqreturn_t gps_host_wake_isr(int irq, void *dev)
 	irq_set_irq_type(irq,
 		gps_host_wake ? IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING);
 
-	printk(KERN_ERR "%s GPS pin level[%s]\n", __func__,
+	printk(KERN_INFO "%s GPS pin level[%s]\n", __func__,
 		gps_host_wake ? "High" : "Low");
 
 	if (p_geofence_wait && gps_host_wake) {
-		printk(KERN_ERR "%s Wake-up GPS daemon[TRUE]\n", __func__);
+		printk(KERN_INFO "%s Wake-up GPS daemon [TRUE]\n", __func__);
 		wake_up_interruptible(p_geofence_wait);
 	}
 

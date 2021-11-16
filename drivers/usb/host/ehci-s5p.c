@@ -13,13 +13,13 @@
  */
 
 #include <linux/clk.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-
 #include <linux/pm_qos.h>
-
-#include <plat/cpu.h>
+#include <linux/of_gpio.h>
 #include <plat/ehci.h>
+#include <linux/usb/samsung_usb_phy.h>
 #include <plat/usb-phy.h>
 
 #include <mach/regs-pmu.h>
@@ -34,7 +34,6 @@
 #include <linux/cpumask.h>
 #include <linux/atomic.h>
 #include <linux/netdevice.h>
-#include <linux/pm_qos.h>
 
 int irq_select_affinity_usr(unsigned int irq, struct cpumask *mask);
 static int set_cpu_core_from_usb_irq(int enable);
@@ -46,6 +45,15 @@ static int g_ehci_irq;
 static int g_ehci_cpu_core = 0;
 
 static struct pm_qos_request s5p_ehci_mif_qos;
+
+#define EHCI_INSNREG00(base)			(base + 0x90)
+#define EHCI_INSNREG00_ENA_INCR16		(0x1 << 25)
+#define EHCI_INSNREG00_ENA_INCR8		(0x1 << 24)
+#define EHCI_INSNREG00_ENA_INCR4		(0x1 << 23)
+#define EHCI_INSNREG00_ENA_INCRX_ALIGN		(0x1 << 22)
+#define EHCI_INSNREG00_ENABLE_DMA_BURST	\
+    (EHCI_INSNREG00_ENA_INCR16 | EHCI_INSNREG00_ENA_INCR8 |	\
+     EHCI_INSNREG00_ENA_INCR4 | EHCI_INSNREG00_ENA_INCRX_ALIGN)
 
 struct s5p_ehci_hcd {
 	struct device *dev;
@@ -116,7 +124,7 @@ static void s5p_ehci_phy_init(struct platform_device *pdev)
 	struct usb_hcd *hcd = s5p_ehci->hcd;
 
 	if (pdata && pdata->phy_init) {
-		pdata->phy_init(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_init(pdev, USB_PHY_TYPE_HOST);
 
 		s5p_ehci_configurate(hcd);
 	}
@@ -129,9 +137,8 @@ static int s5p_ehci_suspend(struct device *dev)
 	struct s5p_ehci_platdata *pdata = pdev->dev.platform_data;
 	struct s5p_ehci_hcd *s5p_ehci = platform_get_drvdata(pdev);
 	struct usb_hcd *hcd = s5p_ehci->hcd;
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
-	unsigned long flags;
-	int rc = 0;
+	bool do_wakeup = device_may_wakeup(dev);
+	int rc;
 
 #if defined(CONFIG_MDM_HSIC_PM)
 	/*
@@ -162,33 +169,12 @@ static int s5p_ehci_suspend(struct device *dev)
 	}
 #endif
 
-	if (time_before(jiffies, ehci->next_statechange))
-		msleep(10);
-
-	/* Root hub was already suspended. Disable irq emission and
-	 * mark HW unaccessible, bail out if RH has been resumed. Use
-	 * the spinlock to properly synchronize with possible pending
-	 * RH suspend or resume activity.
-	 *
-	 * This is still racy as hcd->state is manipulated outside of
-	 * any locks =P But that will be a different fix.
-	 */
-
-	spin_lock_irqsave(&ehci->lock, flags);
-	if (ehci->rh_state != EHCI_RH_SUSPENDED && ehci->rh_state != EHCI_RH_HALTED) {
-		spin_unlock_irqrestore(&ehci->lock, flags);
-		return -EINVAL;
-	}
-	ehci_writel(ehci, 0, &ehci->regs->intr_enable);
-	(void)ehci_readl(ehci, &ehci->regs->intr_enable);
-
-	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-	spin_unlock_irqrestore(&ehci->lock, flags);
+	rc = ehci_suspend(hcd, do_wakeup);
 
 	if (pdata && pdata->phy_exit)
-		pdata->phy_exit(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_exit(pdev, USB_PHY_TYPE_HOST);
 
-	clk_disable(s5p_ehci->clk);
+	clk_disable_unprepare(s5p_ehci->clk);
 
 	return rc;
 }
@@ -198,48 +184,15 @@ static int s5p_ehci_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct s5p_ehci_hcd *s5p_ehci = platform_get_drvdata(pdev);
 	struct usb_hcd *hcd = s5p_ehci->hcd;
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 
-	clk_enable(s5p_ehci->clk);
+	clk_prepare_enable(s5p_ehci->clk);
 
 	s5p_ehci_phy_init(pdev);
 
-	if (time_before(jiffies, ehci->next_statechange))
-		msleep(10);
+	/* DMA burst Enable */
+	writel(EHCI_INSNREG00_ENABLE_DMA_BURST, EHCI_INSNREG00(hcd->regs));
 
-	/* Mark hardware accessible again as we are out of D3 state by now */
-	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-	if (ehci_readl(ehci, &ehci->regs->configured_flag) == FLAG_CF) {
-		int	mask = INTR_MASK;
-
-		if (!hcd->self.root_hub->do_remote_wakeup)
-			mask &= ~STS_PCD;
-		ehci_writel(ehci, mask, &ehci->regs->intr_enable);
-		ehci_readl(ehci, &ehci->regs->intr_enable);
-		return 0;
-	}
-
-	ehci_dbg(ehci, "lost power, restarting\n");
-	usb_root_hub_lost_power(hcd->self.root_hub);
-
-	(void) ehci_halt(ehci);
-	(void) ehci_reset(ehci);
-
-	/* emptying the schedule aborts any urbs */
-	spin_lock_irq(&ehci->lock);
-	if (ehci->reclaim)
-		end_unlink_async(ehci);
-	ehci_work(ehci);
-	spin_unlock_irq(&ehci->lock);
-
-	ehci_writel(ehci, ehci->command, &ehci->regs->command);
-	ehci_writel(ehci, FLAG_CF, &ehci->regs->configured_flag);
-	ehci_readl(ehci, &ehci->regs->command);	/* unblock posted writes */
-
-	/* here we "know" root ports should always stay powered */
-	ehci_port_power(ehci, 1);
-
-	ehci->rh_state = EHCI_RH_SUSPENDED;
+	ehci_resume(hcd, true);
 
 	/* Update runtime PM status and clear runtime_error */
 	pm_runtime_disable(dev);
@@ -293,7 +246,7 @@ static int s5p_ehci_runtime_suspend(struct device *dev)
 	struct s5p_ehci_platdata *pdata = pdev->dev.platform_data;
 
 	if (pdata && pdata->phy_suspend)
-		pdata->phy_suspend(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_suspend(pdev, USB_PHY_TYPE_HOST);
 
 #if defined(CONFIG_MDM_HSIC_PM)
 	request_active_lock_release();
@@ -334,14 +287,14 @@ static int s5p_ehci_runtime_resume(struct device *dev)
 
 	/* platform device isn't suspended */
 	if (pdata && pdata->phy_resume)
-		rc = pdata->phy_resume(pdev, S5P_USB_PHY_HOST);
+		rc = pdata->phy_resume(pdev, USB_PHY_TYPE_HOST);
 
 	if (rc) {
 		s5p_ehci_configurate(hcd);
 
 		/* emptying the schedule aborts any urbs */
 		spin_lock_irq(&ehci->lock);
-		if (ehci->reclaim)
+		if (ehci->async_unlink)
 			end_unlink_async(ehci);
 		ehci_work(ehci);
 		spin_unlock_irq(&ehci->lock);
@@ -381,7 +334,7 @@ static const struct hc_driver s5p_ehci_hc_driver = {
 	.irq			= ehci_irq,
 	.flags			= HCD_MEMORY | HCD_USB2,
 
-	.reset			= ehci_init,
+	.reset			= ehci_setup,
 	.start			= ehci_run,
 	.stop			= ehci_stop,
 	.shutdown		= ehci_shutdown,
@@ -443,7 +396,7 @@ static ssize_t store_ehci_power(struct device *dev,
 		usb_remove_hcd(hcd);
 
 		if (pdata && pdata->phy_exit)
-			pdata->phy_exit(pdev, S5P_USB_PHY_HOST);
+			pdata->phy_exit(pdev, USB_PHY_TYPE_HOST);
 
 		if (pm_qos_request_active(&s5p_ehci_mif_qos))
 			pm_qos_remove_request(&s5p_ehci_mif_qos);
@@ -606,6 +559,26 @@ static int rndis_notify_callback(struct notifier_block *this,
 	return NOTIFY_DONE;
 }
 
+static void s5p_setup_vbus_gpio(struct platform_device *pdev)
+{
+	int err;
+	int gpio;
+
+	if (!pdev->dev.of_node)
+		return;
+
+	gpio = of_get_named_gpio(pdev->dev.of_node,
+			"samsung,vbus-gpio", 0);
+	if (!gpio_is_valid(gpio))
+		return;
+
+	err = gpio_request_one(gpio, GPIOF_OUT_INIT_HIGH, "ehci_vbus_gpio");
+	if (err)
+		dev_err(&pdev->dev, "can't request ehci vbus gpio %d", gpio);
+}
+
+static u64 ehci_s5p_dma_mask = DMA_BIT_MASK(32);
+
 static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 {
 	struct s5p_ehci_platdata *pdata;
@@ -622,7 +595,20 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	s5p_ehci = kzalloc(sizeof(struct s5p_ehci_hcd), GFP_KERNEL);
+	/*
+	 * Right now device-tree probed devices don't get dma_mask set.
+	 * Since shared usb code relies on it, set it here for now.
+	 * Once we move to full device tree support this will vanish off.
+	 */
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &ehci_s5p_dma_mask;
+	if (!pdev->dev.coherent_dma_mask)
+		pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
+	s5p_setup_vbus_gpio(pdev);
+
+	s5p_ehci = devm_kzalloc(&pdev->dev, sizeof(struct s5p_ehci_hcd),
+				GFP_KERNEL);
 	if (!s5p_ehci)
 		return -ENOMEM;
 
@@ -632,8 +618,7 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 					dev_name(&pdev->dev));
 	if (!hcd) {
 		dev_err(&pdev->dev, "Unable to create HCD\n");
-		err = -ENOMEM;
-		goto fail_hcd;
+		return -ENOMEM;
 	}
 
 	s5p_ehci->hcd = hcd;
@@ -645,7 +630,7 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 		goto fail_clk;
 	}
 
-	err = clk_enable(s5p_ehci->clk);
+	err = clk_prepare_enable(s5p_ehci->clk);
 	if (err)
 		goto fail_clken;
 
@@ -658,7 +643,7 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
-	hcd->regs = ioremap(res->start, resource_size(res));
+	hcd->regs = devm_ioremap(&pdev->dev, res->start, hcd->rsrc_len);
 	if (!hcd->regs) {
 		dev_err(&pdev->dev, "Failed to remap I/O memory\n");
 		err = -ENOMEM;
@@ -666,10 +651,9 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (!irq) {
-		dev_err(&pdev->dev, "Failed to get IRQ\n");
-		err = -ENODEV;
-		goto fail;
+	if (irq < 0) {
+		err = irq;
+		goto fail_io;
 	}
 
 	platform_set_drvdata(pdev, s5p_ehci);
@@ -686,19 +670,14 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 
 	ehci = hcd_to_ehci(hcd);
 	ehci->caps = hcd->regs;
-	ehci->regs = hcd->regs +
-		HC_LENGTH(ehci, readl(&ehci->caps->hc_capbase));
 
-	dbg_hcs_params(ehci, "reset");
-	dbg_hcc_params(ehci, "reset");
-
-	/* cache this readonly data; minimize chip reads */
-	ehci->hcs_params = readl(&ehci->caps->hcs_params);
+	/* DMA burst Enable */
+	writel(EHCI_INSNREG00_ENABLE_DMA_BURST, EHCI_INSNREG00(hcd->regs));
 
 	err = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to add USB HCD\n");
-		goto fail;
+		goto fail_io;
 	}
 
 	/*
@@ -723,16 +702,12 @@ static int __devinit s5p_ehci_probe(struct platform_device *pdev)
 #endif
 	return 0;
 
-fail:
-	iounmap(hcd->regs);
 fail_io:
-	clk_disable(s5p_ehci->clk);
+	clk_disable_unprepare(s5p_ehci->clk);
 fail_clken:
 	clk_put(s5p_ehci->clk);
 fail_clk:
 	usb_put_hcd(hcd);
-fail_hcd:
-	kfree(s5p_ehci);
 	return err;
 }
 
@@ -760,15 +735,12 @@ static int __devexit s5p_ehci_remove(struct platform_device *pdev)
 	}
 
 	if (pdata && pdata->phy_exit)
-		pdata->phy_exit(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_exit(pdev, USB_PHY_TYPE_HOST);
 
-	iounmap(hcd->regs);
-
-	clk_disable(s5p_ehci->clk);
+	clk_disable_unprepare(s5p_ehci->clk);
 	clk_put(s5p_ehci->clk);
 
 	usb_put_hcd(hcd);
-	kfree(s5p_ehci);
 
 	return 0;
 }
@@ -792,6 +764,14 @@ static const struct dev_pm_ops s5p_ehci_pm_ops = {
 	.runtime_resume		= s5p_ehci_runtime_resume,
 };
 
+#ifdef CONFIG_OF
+static const struct of_device_id exynos_ehci_match[] = {
+	{ .compatible = "samsung,exynos-ehci" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, exynos_ehci_match);
+#endif
+
 static struct platform_driver s5p_ehci_driver = {
 	.probe		= s5p_ehci_probe,
 	.remove		= __devexit_p(s5p_ehci_remove),
@@ -799,7 +779,8 @@ static struct platform_driver s5p_ehci_driver = {
 	.driver = {
 		.name	= "s5p-ehci",
 		.owner	= THIS_MODULE,
-		.pm = &s5p_ehci_pm_ops,
+		.pm	= &s5p_ehci_pm_ops,
+		.of_match_table = of_match_ptr(exynos_ehci_match),
 	}
 };
 

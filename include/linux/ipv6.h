@@ -166,14 +166,18 @@ struct ipv6_devconf {
 	__s32		accept_source_route;
 #ifdef CONFIG_IPV6_OPTIMISTIC_DAD
 	__s32		optimistic_dad;
+	__s32		use_optimistic;
 #endif
 #ifdef CONFIG_IPV6_MROUTE
 	__s32		mc_forwarding;
 #endif
 	__s32		disable_ipv6;
+	__s32		drop_unicast_in_l2_multicast;
 	__s32		accept_dad;
 	__s32		force_tllao;
 	__s32		accept_ra_prefix_route;
+	__s32		use_oif_addrs_only;
+	__s32		drop_unsolicited_na;
 	void		*sysctl;
 };
 
@@ -217,6 +221,10 @@ enum {
 	DEVCONF_FORCE_TLLAO,
 	DEVCONF_ACCEPT_RA_PREFIX_ROUTE,
 	DEVCONF_ACCEPT_RA_RT_TABLE,
+	DEVCONF_USE_OPTIMISTIC,
+	DEVCONF_USE_OIF_ADDRS_ONLY,
+	DEVCONF_DROP_UNICAST_IN_L2_MULTICAST,
+	DEVCONF_DROP_UNSOLICITED_NA,
 	DEVCONF_MAX
 };
 
@@ -260,6 +268,7 @@ struct inet6_skb_parm {
 #if defined(CONFIG_IPV6_MIP6) || defined(CONFIG_IPV6_MIP6_MODULE)
 	__u16			dsthao;
 #endif
+	__u16			frag_max_size;
 
 #define IP6SKB_XFRM_TRANSFORMED	1
 #define IP6SKB_FORWARDED	2
@@ -304,9 +313,9 @@ struct ipv6_pinfo {
 	struct in6_addr 	rcv_saddr;
 	struct in6_addr		daddr;
 	struct in6_pktinfo	sticky_pktinfo;
-	struct in6_addr		*daddr_cache;
+	const struct in6_addr		*daddr_cache;
 #ifdef CONFIG_IPV6_SUBTREES
-	struct in6_addr		*saddr_cache;
+	const struct in6_addr		*saddr_cache;
 #endif
 
 	__be32			flow_label;

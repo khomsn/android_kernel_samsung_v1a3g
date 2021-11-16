@@ -57,10 +57,6 @@ static inline void disable_cpufreq(void) { }
 #define CPUFREQ_POLICY_POWERSAVE	(1)
 #define CPUFREQ_POLICY_PERFORMANCE	(2)
 
-/* Minimum frequency cutoff to notify the userspace about cpu utilization
- * changes */
-#define MIN_CPU_UTIL_NOTIFY   40
-
 /* Frequency values here are CPU kHz so that hardware which doesn't run
  * with some frequencies can complain without having to guess what per
  * cent / per mille means.
@@ -101,7 +97,6 @@ struct cpufreq_policy {
 	unsigned int		max;    /* in kHz */
 	unsigned int		cur;    /* in kHz, only needed if cpufreq
 					 * governors are used */
-	unsigned int            util;  /* CPU utilization at max frequency */
 	unsigned int		policy; /* see above */
 	struct cpufreq_governor	*governor; /* see below */
 
@@ -130,8 +125,6 @@ struct cpufreq_policy {
 #define CPUFREQ_POSTCHANGE	(1)
 #define CPUFREQ_RESUMECHANGE	(8)
 #define CPUFREQ_SUSPENDCHANGE	(9)
-#define FREQ_STEPS_GPU		9
-#define FREQ_STEPS_GPU_MAX	667
 
 struct cpufreq_freqs {
 	unsigned int cpu;	/* cpu nr */
@@ -214,7 +207,6 @@ void cpufreq_unregister_governor(struct cpufreq_governor *governor);
 
 #define CPUFREQ_RELATION_L 0  /* lowest frequency at or above target */
 #define CPUFREQ_RELATION_H 1  /* highest frequency below or at target */
-#define CPUFREQ_RELATION_C 2 /* closest frequency to target */
 
 struct freq_attr;
 
@@ -262,8 +254,7 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver_data);
 
 
 void cpufreq_notify_transition(struct cpufreq_freqs *freqs, unsigned int state);
-void cpufreq_notify_utilization(struct cpufreq_policy *policy,
-		unsigned int load);
+
 
 static inline void cpufreq_verify_within_limits(struct cpufreq_policy *policy, unsigned int min, unsigned int max)
 {
@@ -314,13 +305,6 @@ __ATTR(_name, 0444, show_##_name, NULL)
 static struct global_attr _name =		\
 __ATTR(_name, 0644, show_##_name, store_##_name)
 
-ssize_t store_UV_mV_table(struct cpufreq_policy *policy,
-				 const char *buf, size_t count);
-ssize_t store_UV_uV_table(struct cpufreq_policy *policy,
-				 const char *buf, size_t count);
-
-ssize_t show_UV_mV_table(struct cpufreq_policy *policy, char *buf);
-ssize_t show_UV_uV_table(struct cpufreq_policy *policy, char *buf);
 
 /*********************************************************************
  *                        CPUFREQ 2.6. INTERFACE                     *

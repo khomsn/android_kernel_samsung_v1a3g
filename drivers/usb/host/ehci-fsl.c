@@ -143,7 +143,7 @@ static int usb_hcd_fsl_probe(const struct hc_driver *driver,
 		struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 
 		ehci->transceiver = usb_get_transceiver();
-		dev_dbg(&pdev->dev, "hcd=0x%pK  ehci=0x%pK, transceiver=0x%pK\n",
+		dev_dbg(&pdev->dev, "hcd=0x%p  ehci=0x%p, transceiver=0x%p\n",
 			hcd, ehci, ehci->transceiver);
 
 		if (ehci->transceiver) {
@@ -331,28 +331,12 @@ static int ehci_fsl_setup(struct usb_hcd *hcd)
 
 	/* EHCI registers start at offset 0x100 */
 	ehci->caps = hcd->regs + 0x100;
-	ehci->regs = hcd->regs + 0x100 +
-		HC_LENGTH(ehci, ehci_readl(ehci, &ehci->caps->hc_capbase));
-	dbg_hcs_params(ehci, "reset");
-	dbg_hcc_params(ehci, "reset");
-
-	/* cache this readonly data; minimize chip reads */
-	ehci->hcs_params = ehci_readl(ehci, &ehci->caps->hcs_params);
 
 	hcd->has_tt = 1;
 
-	retval = ehci_halt(ehci);
+	retval = ehci_setup(hcd);
 	if (retval)
 		return retval;
-
-	/* data structure init */
-	retval = ehci_init(hcd);
-	if (retval)
-		return retval;
-
-	ehci->sbrn = 0x20;
-
-	ehci_reset(ehci);
 
 	if (of_device_is_compatible(dev->parent->of_node,
 				    "fsl,mpc5121-usb2-dr")) {

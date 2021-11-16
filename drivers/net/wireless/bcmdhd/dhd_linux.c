@@ -487,7 +487,7 @@ typedef struct dhd_info {
 } dhd_info_t;
 
 /* Flag to indicate if we should download firmware on driver load */
-uint dhd_download_fw_on_driverload = TRUE;
+uint dhd_download_fw_on_driverload = FALSE;
 
 /* Definitions to provide path to the firmware and nvram
  * example nvram_path[MOD_PARAM_PATHLEN]="/projects/wlan/nvram.txt"
@@ -665,7 +665,7 @@ uint dhd_intr = TRUE;
 module_param(dhd_intr, uint, 0);
 
 /* SDIO Drive Strength (in milliamps) */
-uint dhd_sdiod_drive_strength = 4;
+uint dhd_sdiod_drive_strength = 6;
 module_param(dhd_sdiod_drive_strength, uint, 0);
 
 /* Tx/Rx bounds */
@@ -4380,7 +4380,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 	cpufreq_register_notifier(&dhd->freq_trans, CPUFREQ_TRANSITION_NOTIFIER);
 #endif
 #ifdef DHDTCPACK_SUPPRESS
-	dhd_tcpack_suppress_set(&dhd->pub, TCPACK_SUP_DELAYTX);
+	dhd_tcpack_suppress_set(&dhd->pub, TCPACK_SUP_REPLACE);
 #endif /* DHDTCPACK_SUPPRESS */
 
 	dhd_state |= DHD_ATTACH_STATE_DONE;
@@ -4790,9 +4790,8 @@ dhd_get_concurrent_capabilites(dhd_pub_t *dhd)
 	}
 	return 0;
 }
-#endif
+#endif 
 
-extern void dhd_bus_set_drive_strength(dhd_pub_t *dhdp, uint drive_strength);
 
 int
 dhd_preinit_ioctls(dhd_pub_t *dhd)
@@ -5693,7 +5692,6 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 	dhd_interworking_enable(dhd);
 #endif /* WL11U */
 
-	dhd_bus_set_drive_strength(dhd, dhd_sdiod_drive_strength);
 done:
 	return ret;
 }

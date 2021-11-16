@@ -251,12 +251,12 @@ bool hci_uart_has_flow_control(struct hci_uart *hu)
 
 /* ------ LDISC part ------ */
 /* hci_uart_tty_open
- *
+ * 
  *     Called when line discipline changed to HCI_UART.
  *
  * Arguments:
  *     tty    pointer to tty info structure
- * Return Value:
+ * Return Value:    
  *     0 if success, otherwise error code
  */
 static int hci_uart_tty_open(struct tty_struct *tty)
@@ -356,33 +356,33 @@ static void hci_uart_tty_wakeup(struct tty_struct *tty)
 }
 
 /* hci_uart_tty_receive()
- *
+ * 
  *     Called by tty low level driver when receive data is
  *     available.
- *
+ *     
  * Arguments:  tty          pointer to tty isntance data
  *             data         pointer to received data
  *             flags        pointer to flags for data
  *             count        count of received data in bytes
- *
+ *     
  * Return Value:    None
  */
 static void hci_uart_tty_receive(struct tty_struct *tty, const u8 *data, char *flags, int count)
 {
 	struct hci_uart *hu = (void *)tty->disc_data;
 
-	if (!hu || tty != hu->tty)
+	if (!hu || tty != hu->tty || !data)
 		return;
 
 	if (!test_bit(HCI_UART_PROTO_SET, &hu->flags))
 		return;
 
+	if (!hu->proto)
+		return;
+
 	spin_lock(&hu->rx_lock);
 	hu->proto->recv(hu, (void *) data, count);
-
-	if (hu->hdev)
-		hu->hdev->stat.byte_rx += count;
-
+	hu->hdev->stat.byte_rx += count;
 	spin_unlock(&hu->rx_lock);
 
 	tty_unthrottle(tty);

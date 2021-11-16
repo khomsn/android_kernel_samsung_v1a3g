@@ -1483,7 +1483,8 @@ static int download_fw(struct edgeport_serial *serial)
 		dbg("%s - Download successful -- Device rebooting...",
 								__func__);
 
-		return 1;
+		/* return an error on purpose */
+		return -ENODEV;
 	}
 
 stayinbootmode:

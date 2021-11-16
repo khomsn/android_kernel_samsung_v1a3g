@@ -713,7 +713,7 @@ void neigh_destroy(struct neighbour *neigh)
 
 	if (!neigh->dead) {
 		printk(KERN_WARNING
-		       "Destroying alive neighbour %pK\n", neigh);
+		       "Destroying alive neighbour %p\n", neigh);
 		dump_stack();
 		return;
 	}
@@ -1324,7 +1324,7 @@ int neigh_resolve_output(struct neighbour *neigh, struct sk_buff *skb)
 out:
 	return rc;
 discard:
-	NEIGH_PRINTK1("neigh_resolve_output: dst=%pK neigh=%pK\n",
+	NEIGH_PRINTK1("neigh_resolve_output: dst=%p neigh=%p\n",
 		      dst, neigh);
 out_kfree_skb:
 	rc = -EINVAL;
@@ -2663,6 +2663,7 @@ static void *neigh_stat_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 		*pos = cpu+1;
 		return per_cpu_ptr(tbl->stats, cpu);
 	}
+	(*pos)++;
 	return NULL;
 }
 

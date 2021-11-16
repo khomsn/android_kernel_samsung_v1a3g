@@ -171,6 +171,11 @@ static int init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(udf_inode_cachep);
 }
 
@@ -559,6 +564,7 @@ static int udf_remount_fs(struct super_block *sb, int *flags, char *options)
 	struct udf_options uopt;
 	struct udf_sb_info *sbi = UDF_SB(sb);
 	int error = 0;
+	sync_filesystem(sb);
 
 	uopt.flags = sbi->s_flags;
 	uopt.uid   = sbi->s_uid;

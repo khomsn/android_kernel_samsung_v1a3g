@@ -90,7 +90,7 @@ static struct nsproxy *create_new_namespaces(unsigned long flags,
 		goto out_pid;
 	}
 
-	new_nsp->net_ns = copy_net_ns(flags, tsk->nsproxy->net_ns);
+	new_nsp->net_ns = copy_net_ns(flags, task_cred_xxx(tsk, user_ns), tsk->nsproxy->net_ns);
 	if (IS_ERR(new_nsp->net_ns)) {
 		err = PTR_ERR(new_nsp->net_ns);
 		goto out_net;
@@ -211,20 +211,13 @@ void switch_task_namespaces(struct task_struct *p, struct nsproxy *new)
 
 	might_sleep();
 
+	task_lock(p);
 	ns = p->nsproxy;
+	p->nsproxy = new;
+	task_unlock(p);
 
-	rcu_assign_pointer(p->nsproxy, new);
-
-	if (ns && atomic_dec_and_test(&ns->count)) {
-		/*
-		 * wait for others to get what they want from this nsproxy.
-		 *
-		 * cannot release this nsproxy via the call_rcu() since
-		 * put_mnt_ns() will want to sleep
-		 */
-		synchronize_rcu();
+	if (ns && atomic_dec_and_test(&ns->count))
 		free_nsproxy(ns);
-	}
 }
 
 void exit_task_namespaces(struct task_struct *p)

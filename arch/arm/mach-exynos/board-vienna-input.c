@@ -45,6 +45,8 @@
 
 #if defined(CONFIG_N2A)
 #define MXT_FIRMWARE_NAME_REVISION	"mXT1664S_n.fw"
+#elif defined(CONFIG_V2A)
+#define MXT_FIRMWARE_NAME_REVISION	"mXT1664S_v2.fw"
 #else
 #define MXT_FIRMWARE_NAME_REVISION	"mXT1664S_v.fw"
 #endif
@@ -492,7 +494,7 @@ void __init synaptics_dsx_tsp_init(void)
 	i2c_register_board_info(0, synaptics_dsx_i2c_devs0,
 		 ARRAY_SIZE(synaptics_dsx_i2c_devs0));
 
-	printk(KERN_ERR "%s touch : %d\n",
+	printk(KERN_INFO "%s touch : %d\n",
 		 __func__, synaptics_dsx_i2c_devs0[0].irq);
 }
 #endif

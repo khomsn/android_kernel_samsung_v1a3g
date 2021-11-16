@@ -13,6 +13,7 @@ struct file;
 struct path;
 struct inode;
 struct dentry;
+struct user_namespace;
 
 struct seq_file {
 	char *buf;
@@ -26,6 +27,9 @@ struct seq_file {
 	struct mutex lock;
 	const struct seq_operations *op;
 	int poll_event;
+#ifdef CONFIG_USER_NS
+	struct user_namespace *user_ns;
+#endif
 	void *private;
 };
 
@@ -37,6 +41,21 @@ struct seq_operations {
 };
 
 #define SEQ_SKIP 1
+
+/**
+ * seq_has_overflowed - check if the buffer has overflowed
+ * @m: the seq_file handle
+ *
+ * seq_files have a buffer which may overflow. When this happens a larger
+ * buffer is reallocated and all the data will be printed again.
+ * The overflow state is true when m->count == m->size.
+ *
+ * Returns true if the buffer received more than it can hold.
+ */
+static inline bool seq_has_overflowed(struct seq_file *m)
+{
+	return m->count == m->size;
+}
 
 /**
  * seq_get_buf - get buffer to write arbitrary data to
@@ -175,6 +194,16 @@ static inline void seq_show_option(struct seq_file *m, const char *name,
 	strncpy(val_buf, value, length);		\
 	val_buf[length] = '\0';				\
 	seq_show_option(m, name, val_buf);		\
+}
+
+static inline struct user_namespace *seq_user_ns(struct seq_file *seq)
+{
+#ifdef CONFIG_USER_NS
+	return seq->user_ns;
+#else
+	extern struct user_namespace init_user_ns;
+	return &init_user_ns;
+#endif
 }
 
 #define SEQ_START_TOKEN ((void *)1)

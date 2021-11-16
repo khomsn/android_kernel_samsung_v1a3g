@@ -227,6 +227,11 @@ static inline struct page *page_cache_alloc_readahead(struct address_space *x)
 
 typedef int filler_t(void *, struct page *);
 
+pgoff_t page_cache_next_hole(struct address_space *mapping,
+			     pgoff_t index, unsigned long max_scan);
+pgoff_t page_cache_prev_hole(struct address_space *mapping,
+			     pgoff_t index, unsigned long max_scan);
+
 extern struct page * find_get_page(struct address_space *mapping,
 				pgoff_t index);
 extern struct page * find_lock_page(struct address_space *mapping,
@@ -284,6 +289,11 @@ static inline struct page *read_mapping_page(struct address_space *mapping,
 static inline loff_t page_offset(struct page *page)
 {
 	return ((loff_t)page->index) << PAGE_CACHE_SHIFT;
+}
+
+static inline loff_t page_file_offset(struct page *page)
+{
+	return ((loff_t)page_file_index(page)) << PAGE_CACHE_SHIFT;
 }
 
 extern pgoff_t linear_hugepage_index(struct vm_area_struct *vma,
@@ -393,6 +403,7 @@ static inline void wait_on_page_writeback(struct page *page)
 }
 
 extern void end_page_writeback(struct page *page);
+void wait_for_stable_page(struct page *page);
 
 /*
  * Add an arbitrary waiter to a page's wait queue

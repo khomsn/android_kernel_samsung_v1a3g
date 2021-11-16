@@ -132,17 +132,6 @@ somaxconn - INTEGER
 	Defaults to 128.  See also tcp_max_syn_backlog for additional tuning
 	for TCP sockets.
 
-tcp_abc - INTEGER
-	Controls Appropriate Byte Count (ABC) defined in RFC3465.
-	ABC is a way of increasing congestion window (cwnd) more slowly
-	in response to partial acknowledgments.
-	Possible values are:
-		0 increase cwnd once per acknowledgment (no ABC)
-		1 increase cwnd once per acknowledgment of full sized segment
-		2 allow increase cwnd by two if acknowledgment is
-		  of two segments to compensate for delayed acknowledgments.
-	Default: 0 (off)
-
 tcp_abort_on_overflow - BOOLEAN
 	If listening service is too slow to accept new connections,
 	reset them. Default state is FALSE. It means that if overflow
@@ -479,6 +468,15 @@ tcp_syn_retries - INTEGER
 tcp_timestamps - BOOLEAN
 	Enable timestamps as defined in RFC1323.
 
+tcp_min_tso_segs - INTEGER
+	Minimal number of segments per TSO frame.
+	Since linux-3.12, TCP does an automatic sizing of TSO frames,
+	depending on flow rate, instead of filling 64Kbytes packets.
+	For specific usages, it's possible to force TCP to build big
+	TSO frames. Note that TCP stack might split too big TSO packets
+	if available window is too small.
+	Default: 2
+
 tcp_tso_win_divisor - INTEGER
 	This allows control over what percentage of the congestion window
 	can be consumed by a single TSO frame.
@@ -558,6 +556,17 @@ tcp_challenge_ack_limit - INTEGER
 	Limits number of Challenge ACK sent per second, as recommended
 	in RFC 5961 (Improving TCP's Robustness to Blind In-Window Attacks)
 	Default: 100
+
+tcp_limit_output_bytes - INTEGER
+	Controls TCP Small Queue limit per tcp socket.
+	TCP bulk sender tends to increase packets in flight until it
+	gets losses notifications. With SNDBUF autotuning, this can
+	result in a large amount of packets queued in qdisc/device
+	on the local machine, hurting latency of other flows, for
+	typical pfifo_fast qdiscs.
+	tcp_limit_output_bytes limits the number of bytes on qdisc
+	or device to reduce artificial RTT/cwnd and reduce bufferbloat.
+	Default: 131072
 
 UDP variables:
 
@@ -991,6 +1000,19 @@ disable_xfrm - BOOLEAN
 	Disable IPSEC encryption on this interface, whatever the policy
 
 
+drop_unicast_in_l2_multicast - BOOLEAN
+	Drop any unicast IP packets that are received in link-layer
+	multicast (or broadcast) frames.
+	This behavior (for multicast) is actually a SHOULD in RFC
+	1122, but is disabled by default for compatibility reasons.
+	Default: off (0)
+
+drop_gratuitous_arp - BOOLEAN
+	Drop all gratuitous ARP frames, for example if there's a known
+	good ARP proxy on the network and such frames need not be used
+	(or in the case of 802.11, must not be used to prevent attacks.)
+	Default: off (0)
+
 
 tag - INTEGER
 	Allows you to write a number, which can be used as required.
@@ -1215,6 +1237,13 @@ router_solicitations - INTEGER
 	routers are present.
 	Default: 3
 
+use_oif_addrs_only - BOOLEAN
+	When enabled, the candidate source addresses for destinations
+	routed via this interface are restricted to the set of addresses
+	configured on this interface (vis. RFC 6724, section 4).
+
+	Default: false
+
 use_tempaddr - INTEGER
 	Preference for Privacy Extensions (RFC3041).
 	  <= 0 : disable Privacy Extensions
@@ -1289,6 +1318,32 @@ force_tllao - BOOLEAN
 	address in this case adds little overhead and eliminates a potential
 	race condition where the sender deletes the cached link-layer address
 	prior to receiving a response to a previous solicitation."
+
+optimistic_dad - BOOLEAN
+	Whether to perform Optimistic Duplicate Address Detection (RFC 4429).
+		0: disabled (default)
+		1: enabled
+
+use_optimistic - BOOLEAN
+	If enabled, do not classify optimistic addresses as deprecated during
+	source address selection.  Preferred addresses will still be chosen
+	before optimistic addresses, subject to other ranking in the source
+	address selection algorithm.
+		0: disabled (default)
+		1: enabled
+
+drop_unicast_in_l2_multicast - BOOLEAN
+	Drop any unicast IPv6 packets that are received in link-layer
+	multicast (or broadcast) frames.
+
+	By default this is turned off.
+
+drop_unsolicited_na - BOOLEAN
+	Drop all unsolicited neighbor advertisements, for example if there's
+	a known good NA proxy on the network and such frames need not be used
+	(or in the case of 802.11, must not be used to prevent attacks.)
+
+	By default this is turned off.
 
 icmp/*:
 ratelimit - INTEGER

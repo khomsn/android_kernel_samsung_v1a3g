@@ -783,7 +783,6 @@ static bool dw_mci_fifo_reset(struct device *dev, struct dw_mci *host)
 	return false;
 }
 
-#ifdef CONFIG_MMC_DW_IDMAC
 static int dw_mci_get_dma_dir(struct mmc_data *data)
 {
 	if (data->flags & MMC_DATA_WRITE)
@@ -792,6 +791,7 @@ static int dw_mci_get_dma_dir(struct mmc_data *data)
 		return DMA_FROM_DEVICE;
 }
 
+#ifdef CONFIG_MMC_DW_IDMAC
 static void dw_mci_dma_cleanup(struct dw_mci *host)
 {
 	struct mmc_data *data = host->data;
@@ -2352,6 +2352,9 @@ static void dw_mci_tasklet_func(unsigned long priv)
 			/* fall through */
 
 		case STATE_DATA_BUSY:
+			if (test_and_clear_bit(EVENT_DATA_ERROR,
+						&host->pending_events))
+				dw_mci_fifo_reset(&host->dev, host);
 			if (!test_and_clear_bit(EVENT_DATA_COMPLETE,
 						&host->pending_events))
 				break;
@@ -2373,7 +2376,8 @@ static void dw_mci_tasklet_func(unsigned long priv)
 
 				} else if (status & SDMMC_INT_DCRC) {
 					dev_err(&host->dev,
-						"data CRC error\n");
+						"data CRC error %s\n",
+						(data->flags & MMC_DATA_READ) ? "READ" : "WRITE");
 					data->error = -EILSEQ;
 				} else if (status & SDMMC_INT_EBE) {
 					if (host->dir_status ==
@@ -2467,8 +2471,8 @@ static void dw_mci_tasklet_func(unsigned long priv)
 
 			if (host->mrq->cmd->error &&
 					host->mrq->data) {
-				dw_mci_stop_dma(host);
 				sg_miter_stop(&host->sg_miter);
+				dw_mci_stop_dma(host);
 				host->sg = NULL;
 				dw_mci_fifo_reset(&host->dev, host);
 				dw_mci_ciu_reset(&host->dev, host);
@@ -2490,8 +2494,8 @@ static void dw_mci_tasklet_func(unsigned long priv)
 						&host->pending_events))
 				break;
 
-			dw_mci_stop_dma(host);
 			dw_mci_fifo_reset(&host->dev, host);
+			dw_mci_stop_dma(host);
 			set_bit(EVENT_XFER_COMPLETE, &host->completed_events);
 			set_bit(EVENT_CMD_COMPLETE, &host->pending_events);
 
@@ -3378,13 +3382,9 @@ static int __devinit dw_mci_init_slot(struct dw_mci *host, unsigned int id)
 
 	if (host->pdata->caps)
 		mmc->caps = host->pdata->caps;
-	else
-		mmc->caps = 0;
 
 	if (host->pdata->caps2)
 		mmc->caps2 = host->pdata->caps2;
-	else
-		mmc->caps2 = 0;
 
 	if (host->pdata->pm_caps) {
 		mmc->pm_caps |= host->pdata->pm_caps;
@@ -3412,11 +3412,6 @@ static int __devinit dw_mci_init_slot(struct dw_mci *host, unsigned int id)
 
 	if (host->pdata->quirks & DW_MCI_QUIRK_HIGHSPEED)
 		mmc->caps |= MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED;
-
-	if (mmc->caps2 & MMC_CAP2_POWEROFF_NOTIFY)
-		mmc->power_notify_type = MMC_HOST_PW_NOTIFY_SHORT;
-	else
-		mmc->power_notify_type = MMC_HOST_PW_NOTIFY_NONE;
 
 	if (host->pdata->blk_settings) {
 		mmc->max_segs = host->pdata->blk_settings->max_segs;
@@ -4047,9 +4042,6 @@ void dw_mci_shutdown(struct dw_mci *host)
 		struct dw_mci_slot *slot = host->slot[i];
 		if (!slot)
 			continue;
-
-		if (host->pdata->cd_type == DW_MCI_CD_PERMANENT)
-			mmc_poweroff_notify(slot->mmc);
 	}
 
 	if (host->vqmmc)

@@ -201,6 +201,7 @@ static struct ipv6_devconf ipv6_devconf __read_mostly = {
 	.disable_ipv6		= 0,
 	.accept_dad		= 1,
 	.accept_ra_prefix_route = 1,
+	.use_oif_addrs_only	= 0,
 };
 
 static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
@@ -237,6 +238,7 @@ static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
 	.disable_ipv6		= 0,
 	.accept_dad		= 1,
 	.accept_ra_prefix_route = 1,
+	.use_oif_addrs_only	= 0,
 };
 
 /* IPv6 Wildcard Address and Loopback Address defined by RFC2553 */
@@ -292,10 +294,24 @@ static void addrconf_mod_timer(struct inet6_ifaddr *ifp,
 
 static int snmp6_alloc_dev(struct inet6_dev *idev)
 {
+	int i;
+
 	if (snmp_mib_init((void __percpu **)idev->stats.ipv6,
 			  sizeof(struct ipstats_mib),
 			  __alignof__(struct ipstats_mib)) < 0)
 		goto err_ip;
+
+	for_each_possible_cpu(i) {
+		struct ipstats_mib *addrconf_stats;
+		addrconf_stats = per_cpu_ptr(idev->stats.ipv6[0], i);
+		u64_stats_init(&addrconf_stats->syncp);
+#if SNMP_ARRAY_SZ == 2
+		addrconf_stats = per_cpu_ptr(idev->stats.ipv6[1], i);
+		u64_stats_init(&addrconf_stats->syncp);
+#endif
+	}
+
+
 	idev->stats.icmpv6dev = kzalloc(sizeof(struct icmpv6_mib_device),
 					GFP_KERNEL);
 	if (!idev->stats.icmpv6dev)
@@ -966,6 +982,9 @@ enum {
 #endif
 	IPV6_SADDR_RULE_ORCHID,
 	IPV6_SADDR_RULE_PREFIX,
+#ifdef CONFIG_IPV6_OPTIMISTIC_DAD
+	IPV6_SADDR_RULE_NOT_OPTIMISTIC,
+#endif
 	IPV6_SADDR_RULE_MAX
 };
 
@@ -991,6 +1010,15 @@ static inline int ipv6_saddr_preferred(int type)
 	if (type & (IPV6_ADDR_MAPPED|IPV6_ADDR_COMPATv4|IPV6_ADDR_LOOPBACK))
 		return 1;
 	return 0;
+}
+
+static inline bool ipv6_use_optimistic_addr(struct inet6_dev *idev)
+{
+#ifdef CONFIG_IPV6_OPTIMISTIC_DAD
+	return idev && idev->cnf.optimistic_dad && idev->cnf.use_optimistic;
+#else
+	return false;
+#endif
 }
 
 static int ipv6_get_saddr_eval(struct net *net,
@@ -1053,10 +1081,16 @@ static int ipv6_get_saddr_eval(struct net *net,
 		score->scopedist = ret;
 		break;
 	case IPV6_SADDR_RULE_PREFERRED:
+	    {
 		/* Rule 3: Avoid deprecated and optimistic addresses */
+		u8 avoid = IFA_F_DEPRECATED;
+
+		if (!ipv6_use_optimistic_addr(score->ifa->idev))
+			avoid |= IFA_F_OPTIMISTIC;
 		ret = ipv6_saddr_preferred(score->addr_type) ||
-		      !(score->ifa->flags & (IFA_F_DEPRECATED|IFA_F_OPTIMISTIC));
+		      !(score->ifa->flags & avoid);
 		break;
+	    }
 #ifdef CONFIG_IPV6_MIP6
 	case IPV6_SADDR_RULE_HOA:
 	    {
@@ -1102,6 +1136,14 @@ static int ipv6_get_saddr_eval(struct net *net,
 		score->matchlen = ret = ipv6_addr_diff(&score->ifa->addr,
 						       dst->addr);
 		break;
+#ifdef CONFIG_IPV6_OPTIMISTIC_DAD
+	case IPV6_SADDR_RULE_NOT_OPTIMISTIC:
+		/* Optimistic addresses still have lower precedence than other
+		 * preferred addresses.
+		 */
+		ret = !(score->ifa->flags & IFA_F_OPTIMISTIC);
+		break;
+#endif
 	default:
 		ret = 0;
 	}
@@ -1113,7 +1155,7 @@ out:
 	return ret;
 }
 
-int ipv6_dev_get_saddr(struct net *net, struct net_device *dst_dev,
+int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
 		       const struct in6_addr *daddr, unsigned int prefs,
 		       struct in6_addr *saddr)
 {
@@ -1149,9 +1191,15 @@ int ipv6_dev_get_saddr(struct net *net, struct net_device *dst_dev,
 		 *    include addresses assigned to interfaces
 		 *    belonging to the same site as the outgoing
 		 *    interface.)
+		 *  - "It is RECOMMENDED that the candidate source addresses
+		 *    be the set of unicast addresses assigned to the
+		 *    interface that will be used to send to the destination
+		 *    (the 'outgoing' interface)." (RFC 6724)
 		 */
+		idev = dst_dev ? __in6_dev_get(dst_dev) : NULL;
 		if (((dst_type & IPV6_ADDR_MULTICAST) ||
-		     dst.scope <= IPV6_ADDR_SCOPE_LINKLOCAL) &&
+		     dst.scope <= IPV6_ADDR_SCOPE_LINKLOCAL ||
+		     (idev && idev->cnf.use_oif_addrs_only)) &&
 		    dst.ifindex && dev->ifindex != dst.ifindex)
 			continue;
 
@@ -1298,7 +1346,9 @@ int ipv6_chk_addr(struct net *net, const struct in6_addr *addr,
 		if (!net_eq(dev_net(ifp->idev->dev), net))
 			continue;
 		if (ipv6_addr_equal(&ifp->addr, addr) &&
-		    !(ifp->flags&IFA_F_TENTATIVE) &&
+		    (!(ifp->flags&IFA_F_TENTATIVE) ||
+		     (ipv6_use_optimistic_addr(ifp->idev) &&
+		      ifp->flags&IFA_F_OPTIMISTIC)) &&
 		    (dev == NULL || ifp->idev->dev == dev ||
 		     !(ifp->scope&(IFA_LINK|IFA_HOST) || strict))) {
 			rcu_read_unlock_bh();
@@ -1598,16 +1648,6 @@ static int ipv6_generate_eui64(u8 *eui, struct net_device *dev)
 		return addrconf_ifid_sit(eui, dev);
 	case ARPHRD_IPGRE:
 		return addrconf_ifid_gre(eui, dev);
-	case ARPHRD_RAWIP: {
-		struct in6_addr lladdr;
-
-		if (ipv6_get_lladdr(dev, &lladdr, IFA_F_TENTATIVE))
-			get_random_bytes(eui, 8);
-		else
-			memcpy(eui, lladdr.s6_addr + 8, 8);
-
-		return 0;
-	}
 	}
 	return -1;
 }
@@ -1705,7 +1745,8 @@ static int __ipv6_try_regen_rndid(struct inet6_dev *idev, struct in6_addr *tmpad
 }
 #endif
 
-u32 addrconf_rt_table(const struct net_device *dev, u32 default_table) {
+u32 addrconf_rt_table(const struct net_device *dev, u32 default_table)
+{
 	/* Determines into what table to put autoconf PIO/RIO/default routes
 	 * learned on this device.
 	 *
@@ -2538,7 +2579,6 @@ static void addrconf_dev_config(struct net_device *dev)
 	    (dev->type != ARPHRD_FDDI) &&
 	    (dev->type != ARPHRD_IEEE802_TR) &&
 	    (dev->type != ARPHRD_ARCNET) &&
-	    (dev->type != ARPHRD_RAWIP) &&
 	    (dev->type != ARPHRD_INFINIBAND)) {
 		/* Alas, we support only Ethernet autoconfiguration. */
 		return;
@@ -2942,11 +2982,13 @@ static int addrconf_ifdown(struct net_device *dev, int how)
 
 	write_unlock_bh(&idev->lock);
 
-	/* Step 5: Discard multicast list */
-	if (how)
+	/* Step 5: Discard anycast and multicast list */
+	if (how) {
+		ipv6_ac_destroy_dev(idev);
 		ipv6_mc_destroy_dev(idev);
-	else
+	} else {
 		ipv6_mc_down(idev);
+	}
 
 	idev->tstamp = jiffies;
 
@@ -3061,8 +3103,15 @@ static void addrconf_dad_start(struct inet6_ifaddr *ifp, u32 flags)
 	 * Optimistic nodes can start receiving
 	 * Frames right away
 	 */
-	if (ifp->flags & IFA_F_OPTIMISTIC)
+	if (ifp->flags & IFA_F_OPTIMISTIC) {
 		ip6_ins_rt(ifp->rt);
+		if (ipv6_use_optimistic_addr(idev)) {
+			/* Because optimistic nodes can use this address,
+			 * notify listeners. If DAD fails, RTM_DELADDR is sent.
+			 */
+			ipv6_ifa_notify(RTM_NEWADDR, ifp);
+		}
+	}
 
 	addrconf_dad_kick(ifp);
 out:
@@ -4013,6 +4062,7 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
 	array[DEVCONF_ACCEPT_SOURCE_ROUTE] = cnf->accept_source_route;
 #ifdef CONFIG_IPV6_OPTIMISTIC_DAD
 	array[DEVCONF_OPTIMISTIC_DAD] = cnf->optimistic_dad;
+	array[DEVCONF_USE_OPTIMISTIC] = cnf->use_optimistic;
 #endif
 #ifdef CONFIG_IPV6_MROUTE
 	array[DEVCONF_MC_FORWARDING] = cnf->mc_forwarding;
@@ -4020,6 +4070,9 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
 	array[DEVCONF_DISABLE_IPV6] = cnf->disable_ipv6;
 	array[DEVCONF_ACCEPT_DAD] = cnf->accept_dad;
 	array[DEVCONF_FORCE_TLLAO] = cnf->force_tllao;
+	array[DEVCONF_USE_OIF_ADDRS_ONLY] = cnf->use_oif_addrs_only;
+	array[DEVCONF_DROP_UNICAST_IN_L2_MULTICAST] = cnf->drop_unicast_in_l2_multicast;
+	array[DEVCONF_DROP_UNSOLICITED_NA] = cnf->drop_unsolicited_na;
 }
 
 static inline size_t inet6_ifla6_size(void)
@@ -4681,6 +4734,14 @@ static struct addrconf_sysctl_table
 			.proc_handler   = proc_dointvec,
 
 		},
+		{
+			.procname       = "use_optimistic",
+			.data           = &ipv6_devconf.use_optimistic,
+			.maxlen         = sizeof(int),
+			.mode           = 0644,
+			.proc_handler   = proc_dointvec,
+
+		},
 #endif
 #ifdef CONFIG_IPV6_MROUTE
 		{
@@ -4715,6 +4776,28 @@ static struct addrconf_sysctl_table
 		{
 			.procname	= "accept_ra_prefix_route",
 			.data		= &ipv6_devconf.accept_ra_prefix_route,
+			.maxlen		= sizeof(int),
+			.mode		= 0644,
+			.proc_handler	= proc_dointvec,
+		},
+		{
+			.procname       = "use_oif_addrs_only",
+			.data           = &ipv6_devconf.use_oif_addrs_only,
+			.maxlen         = sizeof(int),
+			.mode           = 0644,
+			.proc_handler   = proc_dointvec,
+
+		},
+		{
+			.procname	= "drop_unicast_in_l2_multicast",
+			.data		= &ipv6_devconf.drop_unicast_in_l2_multicast,
+			.maxlen		= sizeof(int),
+			.mode		= 0644,
+			.proc_handler	= proc_dointvec,
+		},
+		{
+			.procname	= "drop_unsolicited_na",
+			.data		= &ipv6_devconf.drop_unsolicited_na,
 			.maxlen		= sizeof(int),
 			.mode		= 0644,
 			.proc_handler	= proc_dointvec,

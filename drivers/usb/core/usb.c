@@ -80,8 +80,6 @@ struct usb_host_interface *usb_find_alt_setting(
 	struct usb_interface_cache *intf_cache = NULL;
 	int i;
 
-	if (!config)
-		return NULL;
 	for (i = 0; i < config->desc.bNumInterfaces; i++) {
 		if (config->intf_cache[i]->altsetting[0].desc.bInterfaceNumber
 				== iface_num) {
@@ -341,7 +339,8 @@ static const struct dev_pm_ops usb_device_pm_ops = {
 #endif	/* CONFIG_PM */
 
 
-static char *usb_devnode(struct device *dev, umode_t *mode)
+static char *usb_devnode(struct device *dev,
+			 umode_t *mode, kuid_t *uid, kgid_t *gid)
 {
 	struct usb_device *usb_dev;
 

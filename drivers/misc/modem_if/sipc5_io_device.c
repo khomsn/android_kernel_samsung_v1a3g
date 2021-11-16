@@ -938,7 +938,7 @@ static void io_dev_modem_state_changed(struct io_device *iod,
 
 	if (old_state != state) {
 		mc->phone_state = state;
-		mif_err("%s state changed (%s -> %s)\n", mc->name,
+		mif_info("%s state changed (%s -> %s)\n", mc->name,
 			get_cp_state_str(old_state), get_cp_state_str(state));
 	}
 

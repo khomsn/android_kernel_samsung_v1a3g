@@ -595,6 +595,7 @@ static void exit_mm(struct task_struct * tsk)
 	mm_released = mmput(mm);
 	if (mm_released)
 		set_tsk_thread_flag(tsk, TIF_MM_RELEASED);
+	clear_thread_flag(TIF_MEMDIE);
 }
 
 /*
@@ -926,8 +927,6 @@ void do_exit(long code)
 	if (group_dead)
 		disassociate_ctty(1);
 
-	module_put(task_thread_info(tsk)->exec_domain->module);
-
 	proc_exit_connector(tsk);
 
 	/*
@@ -949,7 +948,7 @@ void do_exit(long code)
 	/*
 	 * Make sure we are holding no locks:
 	 */
-	debug_check_no_locks_held(tsk);
+	debug_check_no_locks_held();
 	/*
 	 * We can do this unlocked here. The futex code uses this flag
 	 * just to verify whether the pi state cleanup has been done

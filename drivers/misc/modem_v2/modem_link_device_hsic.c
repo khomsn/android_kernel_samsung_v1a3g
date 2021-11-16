@@ -93,7 +93,7 @@ retry:
 
 	pm_runtime_get_sync(dev);
 
-	mif_err("send 'a'\n");
+	mif_info("send 'a'\n");
 
 	skb = alloc_skb(16, GFP_ATOMIC);
 	if (unlikely(!skb)) {
@@ -724,7 +724,7 @@ static void link_pm_change_modem_state(struct link_pm_data *pm_data,
 	if (!mc->iod || pm_data->usb_ld->ld.com_state != COM_ONLINE)
 		return;
 
-	mif_err("set modem state %d by %pF\n", state,
+	mif_info("set modem state %d by %pF\n", state,
 		__builtin_return_address(0));
 	mc->iod->modem_state_changed(mc->iod, state);
 	mc->bootd->modem_state_changed(mc->bootd, state);

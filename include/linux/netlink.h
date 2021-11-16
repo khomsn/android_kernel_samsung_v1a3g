@@ -7,7 +7,7 @@
 #define NETLINK_ROUTE		0	/* Routing/device hook				*/
 #define NETLINK_UNUSED		1	/* Unused number				*/
 #define NETLINK_USERSOCK	2	/* Reserved for user mode socket protocols 	*/
-#define NETLINK_FIREWALL	3	/* Firewalling hook				*/
+#define NETLINK_FIREWALL	3	/* Unused number, formerly ip_queue		*/
 #define NETLINK_SOCK_DIAG	4	/* socket monitoring				*/
 #define NETLINK_NFLOG		5	/* netfilter/iptables ULOG */
 #define NETLINK_XFRM		6	/* ipsec */
@@ -26,7 +26,6 @@
 #define NETLINK_ECRYPTFS	19
 #define NETLINK_RDMA		20
 #define NETLINK_CRYPTO		21	/* Crypto layer */
-#define NETLINK_SOCKEV		22	/* Socket Administrative Events */
 
 #define NETLINK_INET_DIAG	NETLINK_SOCK_DIAG
 

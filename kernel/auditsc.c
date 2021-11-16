@@ -68,6 +68,7 @@
 #include <linux/capability.h>
 #include <linux/fs_struct.h>
 #include <linux/uaccess.h>
+#include <linux/compat.h>
 
 #include "audit.h"
 
@@ -1168,7 +1169,6 @@ static void audit_log_task_info(struct audit_buffer *ab, struct task_struct *tsk
 {
 	char name[sizeof(tsk->comm)];
 	struct mm_struct *mm = tsk->mm;
-	struct vm_area_struct *vma;
 
 	/* tsk == current */
 
@@ -1178,16 +1178,8 @@ static void audit_log_task_info(struct audit_buffer *ab, struct task_struct *tsk
 
 	if (mm) {
 		down_read(&mm->mmap_sem);
-		vma = mm->mmap;
-		while (vma) {
-			if ((vma->vm_flags & VM_EXECUTABLE) &&
-			    vma->vm_file) {
-				audit_log_d_path(ab, " exe=",
-						 &vma->vm_file->f_path);
-				break;
-			}
-			vma = vma->vm_next;
-		}
+		if (mm->exe_file)
+			audit_log_d_path(ab, " exe=", &mm->exe_file->f_path);
 		up_read(&mm->mmap_sem);
 	}
 	audit_log_task_context(ab);
@@ -1408,7 +1400,8 @@ static void audit_log_cap(struct audit_buffer *ab, char *prefix, kernel_cap_t *c
 
 	audit_log_format(ab, " %s=", prefix);
 	CAP_FOR_EACH_U32(i) {
-		audit_log_format(ab, "%08x", cap->cap[(_KERNEL_CAPABILITY_U32S-1) - i]);
+		audit_log_format(ab, "%08x",
+				 cap->cap[CAP_LAST_U32 - i]);
 	}
 }
 
@@ -2719,13 +2712,16 @@ void audit_core_dumps(long signr)
 	audit_log_end(ab);
 }
 
-void __audit_seccomp(unsigned long syscall)
+void __audit_seccomp(unsigned long syscall, long signr, int code)
 {
 	struct audit_buffer *ab;
 
 	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_ANOM_ABEND);
-	audit_log_abend(ab, "seccomp", SIGKILL);
+	audit_log_abend(ab, "seccomp", signr);
 	audit_log_format(ab, " syscall=%ld", syscall);
+	audit_log_format(ab, " compat=%d", is_compat_task());
+	audit_log_format(ab, " ip=0x%lx", KSTK_EIP(current));
+	audit_log_format(ab, " code=0x%x", code);
 	audit_log_end(ab);
 }
 

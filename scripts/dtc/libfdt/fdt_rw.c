@@ -84,9 +84,9 @@ static int _fdt_rw_check_header(void *fdt)
 
 #define FDT_RW_CHECK_HEADER(fdt) \
 	{ \
-		int err; \
-		if ((err = _fdt_rw_check_header(fdt)) != 0) \
-			return err; \
+		int __err; \
+		if ((__err = _fdt_rw_check_header(fdt)) != 0) \
+			return __err; \
 	}
 
 static inline int _fdt_data_size(void *fdt)
@@ -289,6 +289,33 @@ int fdt_setprop(void *fdt, int nodeoffset, const char *name,
 	return 0;
 }
 
+int fdt_appendprop(void *fdt, int nodeoffset, const char *name,
+		   const void *val, int len)
+{
+	struct fdt_property *prop;
+	int err, oldlen, newlen;
+
+	FDT_RW_CHECK_HEADER(fdt);
+
+	prop = fdt_get_property_w(fdt, nodeoffset, name, &oldlen);
+	if (prop) {
+		newlen = len + oldlen;
+		err = _fdt_splice_struct(fdt, prop->data,
+					 FDT_TAGALIGN(oldlen),
+					 FDT_TAGALIGN(newlen));
+		if (err)
+			return err;
+		prop->len = cpu_to_fdt32(newlen);
+		memcpy(prop->data + oldlen, val, len);
+	} else {
+		err = _fdt_add_property(fdt, nodeoffset, name, len, &prop);
+		if (err)
+			return err;
+		memcpy(prop->data, val, len);
+	}
+	return 0;
+}
+
 int fdt_delprop(void *fdt, int nodeoffset, const char *name)
 {
 	struct fdt_property *prop;
@@ -312,7 +339,7 @@ int fdt_add_subnode_namelen(void *fdt, int parentoffset,
 	int nodelen;
 	int err;
 	uint32_t tag;
-	uint32_t *endtag;
+	fdt32_t *endtag;
 
 	FDT_RW_CHECK_HEADER(fdt);
 
@@ -339,7 +366,7 @@ int fdt_add_subnode_namelen(void *fdt, int parentoffset,
 	nh->tag = cpu_to_fdt32(FDT_BEGIN_NODE);
 	memset(nh->name, 0, FDT_TAGALIGN(namelen+1));
 	memcpy(nh->name, name, namelen);
-	endtag = (uint32_t *)((char *)nh + nodelen - FDT_TAGSIZE);
+	endtag = (fdt32_t *)((char *)nh + nodelen - FDT_TAGSIZE);
 	*endtag = cpu_to_fdt32(FDT_END_NODE);
 
 	return offset;
@@ -367,7 +394,7 @@ int fdt_del_node(void *fdt, int nodeoffset)
 static void _fdt_packblocks(const char *old, char *new,
 			    int mem_rsv_size, int struct_size)
 {
-	int mem_rsv_off, struct_off, strings_off;
+	uint32_t mem_rsv_off, struct_off, strings_off;
 
 	mem_rsv_off = FDT_ALIGN(sizeof(struct fdt_header), 8);
 	struct_off = mem_rsv_off + mem_rsv_size;
@@ -388,35 +415,26 @@ static void _fdt_packblocks(const char *old, char *new,
 
 int fdt_open_into(const void *fdt, void *buf, int bufsize)
 {
-	int err = -1;
-	uint32_t mem_rsv_size;
-	int struct_size;
-	uint32_t newsize;
+	int err;
+	int mem_rsv_size, struct_size;
+	int newsize;
 	const char *fdtstart = fdt;
-	const char *fdtend = NULL;
+	const char *fdtend = fdtstart + fdt_totalsize(fdt);
 	char *tmp;
 
-	if (fdtstart + fdt_totalsize(fdt) < fdtstart) {
-		return err;
-	}
-	fdtend = fdtstart + fdt_totalsize(fdt);
 	FDT_CHECK_HEADER(fdt);
-
-	if ((fdt_num_mem_rsv(fdt)+1) > (UINT_MAX / sizeof(struct fdt_reserve_entry)))  {
-		return err;
-	}
 
 	mem_rsv_size = (fdt_num_mem_rsv(fdt)+1)
 		* sizeof(struct fdt_reserve_entry);
 
 	if (fdt_version(fdt) >= 17) {
 		struct_size = fdt_size_dt_struct(fdt);
-			if (struct_size < 0)
-				return struct_size;
 	} else {
 		struct_size = 0;
 		while (fdt_next_tag(fdt, struct_size, &struct_size) != FDT_END)
 			;
+		if (struct_size < 0)
+			return struct_size;
 	}
 
 	if (!_fdt_blocks_misordered(fdt, mem_rsv_size, struct_size)) {
@@ -429,22 +447,16 @@ int fdt_open_into(const void *fdt, void *buf, int bufsize)
 		fdt_set_totalsize(buf, bufsize);
 		return 0;
 	}
-	if (((uint64_t)FDT_ALIGN(sizeof(struct fdt_header), 8) + (uint64_t)mem_rsv_size \
-                + (uint64_t)struct_size + (uint64_t)fdt_size_dt_strings(fdt)) > UINT_MAX) {
-		return (err = -1);
-	}
 
 	/* Need to reorder */
 	newsize = FDT_ALIGN(sizeof(struct fdt_header), 8) + mem_rsv_size
 		+ struct_size + fdt_size_dt_strings(fdt);
+
 	if (bufsize < newsize)
 		return -FDT_ERR_NOSPACE;
 
 	/* First attempt to build converted tree at beginning of buffer */
 	tmp = buf;
-	if (((tmp + newsize) < tmp) || ((buf + bufsize) < buf)) {
-		return (err = -1);
-	}
 	/* But if that overlaps with the old tree... */
 	if (((tmp + newsize) > fdtstart) && (tmp < fdtend)) {
 		/* Try right after the old tree instead */

@@ -84,12 +84,16 @@
 #define O_PATH		010000000
 #endif
 
-#ifndef O_NDELAY
-#define O_NDELAY	O_NONBLOCK
+#ifndef __O_TMPFILE
+#define __O_TMPFILE	020000000
 #endif
 
-#ifdef CONFIG_SCFS_LOWER_PAGECACHE_INVALIDATION
-#define O_SCFSLOWER 040000000
+/* a horrid kludge trying to make sure that this will fail on old kernels */
+#define O_TMPFILE (__O_TMPFILE | O_DIRECTORY)
+#define O_TMPFILE_MASK (__O_TMPFILE | O_DIRECTORY | O_CREAT)
+
+#ifndef O_NDELAY
+#define O_NDELAY	O_NONBLOCK
 #endif
 
 #define F_DUPFD		0	/* dup */
@@ -123,6 +127,22 @@
 #define F_SETOWN_EX	15
 #define F_GETOWN_EX	16
 #endif
+
+/*
+ * fd "private" POSIX locks.
+ *
+ * Usually POSIX locks held by a process are released on *any* close and are
+ * not inherited across a fork().
+ *
+ * These cmd values will set locks that conflict with normal POSIX locks, but
+ * are "owned" by the opened file, not the process. This means that they are
+ * inherited across fork() like BSD (flock) locks, and they are only released
+ * automatically when the last reference to the the open file against which
+ * they were acquired is put.
+ */
+#define F_OFD_GETLK	36
+#define F_OFD_SETLK	37
+#define F_OFD_SETLKW	38
 
 #define F_OWNER_TID	0
 #define F_OWNER_PID	1

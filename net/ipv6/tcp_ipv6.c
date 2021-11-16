@@ -252,7 +252,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	fl6.flowi6_mark = sk->sk_mark;
 	fl6.fl6_dport = usin->sin6_port;
 	fl6.fl6_sport = inet->inet_sport;
-	fl6.flowi6_uid = sock_i_uid(sk);
+	fl6.flowi6_uid = sk->sk_uid;
 
 	opt = rcu_dereference_protected(np->opt, sock_owned_by_user(sk));
 	final_p = fl6_update_dst(&fl6, opt, &final);
@@ -332,6 +332,23 @@ failure:
 	return err;
 }
 
+static void tcp_v6_mtu_reduced(struct sock *sk)
+{
+	struct dst_entry *dst;
+
+	if ((1 << sk->sk_state) & (TCPF_LISTEN | TCPF_CLOSE))
+		return;
+
+	dst = inet6_csk_update_pmtu(sk, tcp_sk(sk)->mtu_info);
+	if (!dst)
+		return;
+
+	if (inet_csk(sk)->icsk_pmtu_cookie > dst_mtu(dst)) {
+		tcp_sync_mss(sk, dst_mtu(dst));
+		tcp_simple_retransmit(sk);
+	}
+}
+
 static void tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 		u8 type, u8 code, int offset, __be32 info)
 {
@@ -359,7 +376,7 @@ static void tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	}
 
 	bh_lock_sock(sk);
-	if (sock_owned_by_user(sk))
+	if (sock_owned_by_user(sk) && type != ICMPV6_PKT_TOOBIG)
 		NET_INC_STATS_BH(net, LINUX_MIB_LOCKDROPPEDICMPS);
 
 	if (sk->sk_state == TCP_CLOSE)
@@ -381,49 +398,11 @@ static void tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	np = inet6_sk(sk);
 
 	if (type == ICMPV6_PKT_TOOBIG) {
-		struct dst_entry *dst;
-
-		if (sock_owned_by_user(sk))
-			goto out;
-		if ((1 << sk->sk_state) & (TCPF_LISTEN | TCPF_CLOSE))
-			goto out;
-
-		/* icmp should have updated the destination cache entry */
-		dst = __sk_dst_check(sk, np->dst_cookie);
-
-		if (dst == NULL) {
-			struct inet_sock *inet = inet_sk(sk);
-			struct flowi6 fl6;
-
-			/* BUGGG_FUTURE: Again, it is not clear how
-			   to handle rthdr case. Ignore this complexity
-			   for now.
-			 */
-			memset(&fl6, 0, sizeof(fl6));
-			fl6.flowi6_proto = IPPROTO_TCP;
-			fl6.daddr = np->daddr;
-			fl6.saddr = np->saddr;
-			fl6.flowi6_oif = sk->sk_bound_dev_if;
-			fl6.flowi6_mark = sk->sk_mark;
-			fl6.fl6_dport = inet->inet_dport;
-			fl6.fl6_sport = inet->inet_sport;
-			fl6.flowi6_uid = sock_i_uid(sk);
-			security_skb_classify_flow(skb, flowi6_to_flowi(&fl6));
-
-			dst = ip6_dst_lookup_flow(sk, &fl6, NULL, false);
-			if (IS_ERR(dst)) {
-				sk->sk_err_soft = -PTR_ERR(dst);
-				goto out;
-			}
-
-		} else
-			dst_hold(dst);
-
-		if (inet_csk(sk)->icsk_pmtu_cookie > dst_mtu(dst)) {
-			tcp_sync_mss(sk, dst_mtu(dst));
-			tcp_simple_retransmit(sk);
-		} /* else let the usual retransmit timer handle it */
-		dst_release(dst);
+		tp->mtu_info = ntohl(info);
+		if (!sock_owned_by_user(sk))
+			tcp_v6_mtu_reduced(sk);
+		else
+			set_bit(TCP_MTU_REDUCED_DEFERRED, &tp->tsq_flags);
 		goto out;
 	}
 
@@ -500,7 +479,6 @@ static int tcp_v6_send_synack(struct sock *sk, struct request_sock *req,
 	fl6.flowi6_mark = inet_rsk(req)->ir_mark;
 	fl6.fl6_dport = inet_rsk(req)->rmt_port;
 	fl6.fl6_sport = inet_rsk(req)->loc_port;
-	fl6.flowi6_uid = sock_i_uid(sk);
 	security_req_classify_flow(req, flowi6_to_flowi(&fl6));
 
 	opt = np->opt;
@@ -832,14 +810,15 @@ static int tcp6_gro_complete(struct sk_buff *skb)
 	return tcp_gro_complete(skb);
 }
 
-static void tcp_v6_send_response(struct sk_buff *skb, u32 seq, u32 ack, u32 win,
-				 u32 ts, struct tcp_md5sig_key *key, int rst, u8 tclass)
+static void tcp_v6_send_response(struct sock *sk, struct sk_buff *skb, u32 seq,
+				 u32 ack, u32 win, u32 ts,
+				 struct tcp_md5sig_key *key, int rst, u8 tclass)
 {
 	const struct tcphdr *th = tcp_hdr(skb);
 	struct tcphdr *t1;
 	struct sk_buff *buff;
 	struct flowi6 fl6;
-	struct net *net = dev_net(skb_dst(skb)->dev);
+	struct net *net = sk ? sock_net(sk) : dev_net(skb_dst(skb)->dev);
 	struct sock *ctl_sk = net->ipv6.tcp_sk;
 	unsigned int tot_len = sizeof(struct tcphdr);
 	struct dst_entry *dst;
@@ -907,6 +886,7 @@ static void tcp_v6_send_response(struct sk_buff *skb, u32 seq, u32 ack, u32 win,
 	fl6.flowi6_mark = IP6_REPLY_MARK(net, skb->mark);
 	fl6.fl6_dport = t1->dest;
 	fl6.fl6_sport = t1->source;
+	fl6.flowi6_uid = sock_net_uid(net, sk && sk_fullsock(sk) ? sk : NULL);
 	security_skb_classify_flow(skb, flowi6_to_flowi(&fl6));
 
 	/* Pass a socket to ip6_dst_lookup either it is for RST
@@ -942,7 +922,10 @@ static void tcp_v6_send_reset(struct sock *sk, struct sk_buff *skb)
 	if (th->rst)
 		return;
 
-	if (!ipv6_unicast_destination(skb))
+	/* If sk not NULL, it means we did a successful lookup and incoming
+	 * route had to be correct. prequeue might have dropped our dst.
+	 */
+	if (!sk && !ipv6_unicast_destination(skb))
 		return;
 
 #ifdef CONFIG_TCP_MD5SIG
@@ -980,7 +963,7 @@ static void tcp_v6_send_reset(struct sock *sk, struct sk_buff *skb)
 		ack_seq = ntohl(th->seq) + th->syn + th->fin + skb->len -
 			  (th->doff << 2);
 
-	tcp_v6_send_response(skb, seq, ack_seq, 0, 0, key, 1, 0);
+	tcp_v6_send_response(sk, skb, seq, ack_seq, 0, 0, key, 1, 0);
 
 #ifdef CONFIG_TCP_MD5SIG
 release_sk1:
@@ -991,10 +974,11 @@ release_sk1:
 #endif
 }
 
-static void tcp_v6_send_ack(struct sk_buff *skb, u32 seq, u32 ack, u32 win, u32 ts,
+static void tcp_v6_send_ack(struct sock *sk, struct sk_buff *skb,
+			    u32 seq, u32 ack, u32 win, u32 ts,
 			    struct tcp_md5sig_key *key, u8 tclass)
 {
-	tcp_v6_send_response(skb, seq, ack, win, ts, key, 0, tclass);
+	tcp_v6_send_response(sk, skb, seq, ack, win, ts, key, 0, tclass);
 }
 
 static void tcp_v6_timewait_ack(struct sock *sk, struct sk_buff *skb)
@@ -1002,7 +986,7 @@ static void tcp_v6_timewait_ack(struct sock *sk, struct sk_buff *skb)
 	struct inet_timewait_sock *tw = inet_twsk(sk);
 	struct tcp_timewait_sock *tcptw = tcp_twsk(sk);
 
-	tcp_v6_send_ack(skb, tcptw->tw_snd_nxt, tcptw->tw_rcv_nxt,
+	tcp_v6_send_ack(sk, skb, tcptw->tw_snd_nxt, tcptw->tw_rcv_nxt,
 			tcptw->tw_rcv_wnd >> tw->tw_rcv_wscale,
 			tcptw->tw_ts_recent, tcp_twsk_md5_key(tcptw),
 			tw->tw_tclass);
@@ -1013,7 +997,7 @@ static void tcp_v6_timewait_ack(struct sock *sk, struct sk_buff *skb)
 static void tcp_v6_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
 				  struct request_sock *req)
 {
-	tcp_v6_send_ack(skb, tcp_rsk(req)->snt_isn + 1, tcp_rsk(req)->rcv_isn + 1, req->rcv_wnd, req->ts_recent,
+	tcp_v6_send_ack(sk, skb, tcp_rsk(req)->snt_isn + 1, tcp_rsk(req)->rcv_isn + 1, req->rcv_wnd, req->ts_recent,
 			tcp_v6_md5_do_lookup(sk, &ipv6_hdr(skb)->daddr), 0);
 }
 
@@ -1065,7 +1049,7 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	__u32 isn = TCP_SKB_CB(skb)->when;
 	struct dst_entry *dst = NULL;
-	int want_cookie = 0;
+	bool want_cookie = false;
 
 	if (skb->protocol == htons(ETH_P_IP))
 		return tcp_v4_conn_request(sk, skb);
@@ -1126,7 +1110,7 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 		while (l-- > 0)
 			*c++ ^= *hash_location++;
 
-		want_cookie = 0;	/* not our kind of cookie */
+		want_cookie = false;	/* not our kind of cookie */
 		tmp_ext.cookie_out_never = 0; /* false */
 		tmp_ext.cookie_plus = tmp_opt.cookie_plus;
 	} else if (!tp->rx_opt.cookie_in_always) {
@@ -1660,6 +1644,7 @@ process:
 	}
 
 	bh_lock_sock_nested(sk);
+	tcp_sk(sk)->segs_in += max_t(u16, 1, skb_shinfo(skb)->gso_segs);
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 #ifdef CONFIG_NET_DMA
@@ -1855,6 +1840,7 @@ static int tcp_v6_init_sock(struct sock *sk)
 	skb_queue_head_init(&tp->out_of_order_queue);
 	tcp_init_xmit_timers(sk);
 	tcp_prequeue_init(tp);
+	INIT_LIST_HEAD(&tp->tsq_node);
 
 	icsk->icsk_rto = TCP_TIMEOUT_INIT;
 	tp->mdev = TCP_TIMEOUT_INIT;
@@ -2122,6 +2108,8 @@ struct proto tcpv6_prot = {
 	.sendmsg		= tcp_sendmsg,
 	.sendpage		= tcp_sendpage,
 	.backlog_rcv		= tcp_v6_do_rcv,
+	.release_cb		= tcp_release_cb,
+	.mtu_reduced		= tcp_v6_mtu_reduced,
 	.hash			= tcp_v6_hash,
 	.unhash			= inet_unhash,
 	.get_port		= inet_csk_get_port,

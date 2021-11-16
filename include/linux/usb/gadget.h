@@ -512,6 +512,8 @@ struct usb_gadget_ops {
  * @name: Identifies the controller hardware type.  Used in diagnostics
  *	and sometimes configuration.
  * @dev: Driver model state for this abstract device.
+ * @quirk_ep_out_aligned_size: epout requires buffer size to be aligned to
+ *	MaxPacketSize.
  *
  * Gadgets have a mostly-portable "gadget driver" implementing device
  * functions, handling all usb configurations and interfaces.  Gadget
@@ -544,6 +546,7 @@ struct usb_gadget {
 	unsigned			b_hnp_enable:1;
 	unsigned			a_hnp_support:1;
 	unsigned			a_alt_hnp_support:1;
+	unsigned			quirk_ep_out_aligned_size:1;
 	const char			*name;
 	struct device			dev;
 };
@@ -563,19 +566,29 @@ static inline struct usb_gadget *dev_to_usb_gadget(struct device *dev)
 
 
 /**
+ * usb_ep_align_maybe - returns @len aligned to ep's maxpacketsize if gadget
+ *	requires quirk_ep_out_aligned_size, otherwise reguens len.
+ * @g: controller to check for quirk
+ * @ep: the endpoint whose maxpacketsize is used to align @len
+ * @len: buffer size's length to align to @ep's maxpacketsize
+ *
+ * This helper is used in case it's required for any reason to check and maybe
+ * align buffer's size to an ep's maxpacketsize.
+ */
+static inline size_t
+usb_ep_align_maybe(struct usb_gadget *g, struct usb_ep *ep, size_t len)
+{
+	return !g->quirk_ep_out_aligned_size ? len :
+			round_up(len, (size_t)ep->desc->wMaxPacketSize);
+}
+
+/**
  * gadget_is_dualspeed - return true iff the hardware handles high speed
  * @g: controller that might support both high and full speeds
  */
 static inline int gadget_is_dualspeed(struct usb_gadget *g)
 {
-#ifdef CONFIG_USB_GADGET_DUALSPEED
-	/* runtime test would check "g->max_speed" ... that might be
-	 * useful to work around hardware bugs, but is mostly pointless
-	 */
-	return 1;
-#else
-	return 0;
-#endif
+	return g->max_speed >= USB_SPEED_HIGH;
 }
 
 /**
@@ -585,15 +598,7 @@ static inline int gadget_is_dualspeed(struct usb_gadget *g)
  */
 static inline int gadget_is_superspeed(struct usb_gadget *g)
 {
-#ifdef CONFIG_USB_GADGET_SUPERSPEED
-	/*
-	 * runtime test would check "g->max_speed" ... that might be
-	 * useful to work around hardware bugs, but is mostly pointless
-	 */
-	return 1;
-#else
-	return 0;
-#endif
+	return g->max_speed >= USB_SPEED_SUPER;
 }
 
 /**
@@ -937,6 +942,11 @@ int usb_gadget_get_string(struct usb_gadget_strings *table, int id, u8 *buf);
 
 /* utility to simplify managing config descriptors */
 
+/* Find and fill the requested descriptor into buffer */
+int
+usb_find_descriptor_fillbuf(void *, unsigned,
+		const struct usb_descriptor_header **, u8);
+
 /* write vector of descriptors into buffer */
 int usb_descriptor_fillbuf(void *, unsigned,
 		const struct usb_descriptor_header **);
@@ -957,6 +967,13 @@ static inline void usb_free_descriptors(struct usb_descriptor_header **v)
 {
 	kfree(v);
 }
+
+struct usb_function;
+int usb_assign_descriptors(struct usb_function *f,
+		struct usb_descriptor_header **fs,
+		struct usb_descriptor_header **hs,
+		struct usb_descriptor_header **ss);
+void usb_free_all_descriptors(struct usb_function *f);
 
 /*-------------------------------------------------------------------------*/
 

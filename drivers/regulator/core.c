@@ -1359,14 +1359,12 @@ void regulator_put(struct regulator *regulator)
 	/* remove any sysfs entries */
 	if (regulator->dev)
 		sysfs_remove_link(&rdev->dev.kobj, regulator->supply_name);
-	mutex_lock(&rdev->mutex);
 	kfree(regulator->supply_name);
 	list_del(&regulator->list);
 	kfree(regulator);
 
 	rdev->open_count--;
 	rdev->exclusive = 0;
-	mutex_unlock(&rdev->mutex);
 
 	module_put(rdev->owner);
 	mutex_unlock(&regulator_list_mutex);
@@ -1692,9 +1690,8 @@ int regulator_disable_deferred(struct regulator *regulator, int ms)
 	rdev->deferred_disables++;
 	mutex_unlock(&rdev->mutex);
 
-	ret = queue_delayed_work(system_power_efficient_wq,
-				 &rdev->disable_work,
-				 msecs_to_jiffies(ms));
+	ret = schedule_delayed_work(&rdev->disable_work,
+				    msecs_to_jiffies(ms));
 	if (ret < 0)
 		return ret;
 	else

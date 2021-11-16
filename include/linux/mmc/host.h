@@ -274,10 +274,6 @@ struct mmc_host {
 #define MMC_CAP2_STROBE_ENHANCED	(1 << 14)	/* enhanced strobe */
 
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */
-	unsigned int        power_notify_type;
-#define MMC_HOST_PW_NOTIFY_NONE		0
-#define MMC_HOST_PW_NOTIFY_SHORT	1
-#define MMC_HOST_PW_NOTIFY_LONG		2
 
 #ifdef CONFIG_MMC_CLKGATE
 	int			clk_requests;	/* internal reference counter */
@@ -325,6 +321,7 @@ struct mmc_host {
 
 	struct delayed_work	detect;
 	struct wake_lock	detect_wake_lock;
+	const char		*wlock_name;
 	int			detect_change;	/* card detect flag */
 	struct mmc_hotplug	hotplug;
 
@@ -413,8 +410,7 @@ extern int mmc_resume_bus(struct mmc_host *host);
 
 extern int mmc_suspend_host(struct mmc_host *);
 extern int mmc_resume_host(struct mmc_host *);
-extern void mmc_poweroff_notify(struct mmc_host *host);
-
+extern int mmc_poweroff_notify(struct mmc_card *card, unsigned int notify_type);
 extern int mmc_power_save_host(struct mmc_host *host);
 extern int mmc_power_restore_host(struct mmc_host *host);
 

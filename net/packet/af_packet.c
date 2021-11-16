@@ -401,7 +401,7 @@ static void unregister_prot_hook(struct sock *sk, bool sync)
 		__unregister_prot_hook(sk, sync);
 }
 
-static inline struct page * __pure pgv_to_page(void *addr)
+static inline __pure struct page *pgv_to_page(void *addr)
 {
 	if (is_vmalloc_addr(addr))
 		return vmalloc_to_page(addr);
@@ -503,8 +503,7 @@ static void prb_shutdown_retire_blk_timer(struct packet_sock *po,
 {
 	struct tpacket_kbdq_core *pkc;
 
-	pkc = tx_ring ? GET_PBDQC_FROM_RB(&po->tx_ring) :
-			GET_PBDQC_FROM_RB(&po->rx_ring);
+	pkc = tx_ring ? &po->tx_ring.prb_bdqc : &po->rx_ring.prb_bdqc;
 
 	spin_lock_bh(&rb_queue->lock);
 	pkc->delete_blk_timer = 1;
@@ -530,8 +529,7 @@ static void prb_setup_retire_blk_timer(struct packet_sock *po, int tx_ring)
 	if (tx_ring)
 		BUG();
 
-	pkc = tx_ring ? GET_PBDQC_FROM_RB(&po->tx_ring) :
-			GET_PBDQC_FROM_RB(&po->rx_ring);
+	pkc = tx_ring ? &po->tx_ring.prb_bdqc : &po->rx_ring.prb_bdqc;
 	prb_init_blk_timer(po, pkc, prb_retire_rx_blk_timer_expired);
 }
 
@@ -570,7 +568,8 @@ static int prb_calc_retire_blk_tmo(struct packet_sock *po,
 		default:
 			return DEFAULT_PRB_RETIRE_TOV;
 		}
-	}
+	} else
+		return DEFAULT_PRB_RETIRE_TOV;
 
 	mbits = (blk_size_in_bytes * 8) / (1024 * 1024);
 
@@ -595,7 +594,7 @@ static void init_prb_bdqc(struct packet_sock *po,
 			struct pgv *pg_vec,
 			union tpacket_req_u *req_u, int tx_ring)
 {
-	struct tpacket_kbdq_core *p1 = GET_PBDQC_FROM_RB(rb);
+	struct tpacket_kbdq_core *p1 = &rb->prb_bdqc;
 	struct tpacket_block_desc *pbd;
 
 	memset(p1, 0x0, sizeof(*p1));
@@ -660,7 +659,7 @@ static void _prb_refresh_rx_retire_blk_timer(struct tpacket_kbdq_core *pkc)
 static void prb_retire_rx_blk_timer_expired(unsigned long data)
 {
 	struct packet_sock *po = (struct packet_sock *)data;
-	struct tpacket_kbdq_core *pkc = GET_PBDQC_FROM_RB(&po->rx_ring);
+	struct tpacket_kbdq_core *pkc = &po->rx_ring.prb_bdqc;
 	unsigned int frozen;
 	struct tpacket_block_desc *pbd;
 
@@ -1562,9 +1561,8 @@ retry:
 	skb->dev = dev;
 	skb->priority = sk->sk_priority;
 	skb->mark = sk->sk_mark;
-	err = sock_tx_timestamp(sk, &skb_shinfo(skb)->tx_flags);
-	if (err < 0)
-		goto out_unlock;
+
+	sock_tx_timestamp(sk, &skb_shinfo(skb)->tx_flags);
 
 	if (unlikely(extra_len == 4))
 		skb->no_fcs = 1;
@@ -1735,18 +1733,12 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 	int skb_len = skb->len;
 	unsigned int snaplen, res;
 	unsigned long status = TP_STATUS_USER;
-	unsigned short macoff, netoff, hdrlen;
+	unsigned short macoff, hdrlen;
+	unsigned int netoff;
 	struct sk_buff *copy_skb = NULL;
 	struct timeval tv;
 	struct timespec ts;
 	struct skb_shared_hwtstamps *shhwtstamps = skb_hwtstamps(skb);
-
-	/* struct tpacket{2,3}_hdr is aligned to a multiple of TPACKET_ALIGNMENT.
-	 * We may add members to them until current aligned size without forcing
-	 * userspace to call getsockopt(..., PACKET_HDRLEN, ...).
-	 */
-	BUILD_BUG_ON(TPACKET_ALIGN(sizeof(*h.h2)) != 32);
-	BUILD_BUG_ON(TPACKET_ALIGN(sizeof(*h.h3)) != 48);
 
 	if (skb->pkt_type == PACKET_LOOPBACK)
 		goto drop;
@@ -1786,6 +1778,12 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 				       (maclen < 16 ? 16 : maclen)) +
 			po->tp_reserve;
 		macoff = netoff - maclen;
+	}
+	if (netoff > USHRT_MAX) {
+		spin_lock(&sk->sk_receive_queue.lock);
+		po->stats.tp_drops++;
+		spin_unlock(&sk->sk_receive_queue.lock);
+		goto drop_n_restore;
 	}
 	if (po->tp_version <= TPACKET_V2) {
 		if (macoff + snaplen > po->rx_ring.frame_size) {
@@ -2374,9 +2372,8 @@ static int packet_snd(struct socket *sock,
 	err = skb_copy_datagram_from_iovec(skb, offset, msg->msg_iov, 0, len);
 	if (err)
 		goto out_free;
-	err = sock_tx_timestamp(sk, &skb_shinfo(skb)->tx_flags);
-	if (err < 0)
-		goto out_free;
+
+	sock_tx_timestamp(sk, &skb_shinfo(skb)->tx_flags);
 
 	if (!gso_type && (len > dev->mtu + reserve + extra_len)) {
 		/* Earlier code assumed this would be a VLAN pkt,
@@ -3695,7 +3692,7 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 	lock_sock(sk);
 	/* Opening a Tx-ring is NOT supported in TPACKET_V3 */
 	if (!closing && tx_ring && (po->tp_version > TPACKET_V2)) {
-		net_warn_ratelimited("Tx-ring is not supported.\n");
+		WARN(1, "Tx-ring is not supported.\n");
 		goto out;
 	}
 
@@ -3819,7 +3816,7 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 		register_prot_hook(sk);
 	}
 	spin_unlock(&po->bind_lock);
-	if (pg_vec && (po->tp_version > TPACKET_V2)) {
+	if (closing && (po->tp_version > TPACKET_V2)) {
 		/* Because we don't support block-based V3 on tx-ring */
 		if (!tx_ring)
 			prb_shutdown_retire_blk_timer(po, tx_ring, rb_queue);

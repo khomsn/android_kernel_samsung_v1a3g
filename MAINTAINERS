@@ -2890,18 +2890,6 @@ F:	Documentation/filesystems/caching/
 F:	fs/fscache/
 F:	include/linux/fscache*.h
 
-F2FS FILE SYSTEM
-M:	Jaegeuk Kim <jaegeuk@kernel.org>
-M:	Changman Lee <cm224.lee@samsung.com>
-L:	linux-f2fs-devel@lists.sourceforge.net
-W:	http://en.wikipedia.org/wiki/F2FS
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/jaegeuk/f2fs.git
-S:	Maintained
-F:	Documentation/filesystems/f2fs.txt
-F:	Documentation/ABI/testing/sysfs-fs-f2fs
-F:	fs/f2fs/
-F:	include/linux/f2fs_fs.h
-
 FUJITSU FR-V (FRV) PORT
 M:	David Howells <dhowells@redhat.com>
 S:	Maintained
@@ -7675,6 +7663,21 @@ ZS DECSTATION Z85C30 SERIAL DRIVER
 M:	"Maciej W. Rozycki" <macro@linux-mips.org>
 S:	Maintained
 F:	drivers/tty/serial/zs.*
+
+ZSMALLOC COMPRESSED SLAB MEMORY ALLOCATOR
+M:	Minchan Kim <minchan@kernel.org>
+M:	Nitin Gupta <ngupta@vflare.org>
+L:	linux-mm@kvack.org
+S:	Maintained
+F:	mm/zsmalloc.c
+F:	include/linux/zsmalloc.h
+F:	Documentation/vm/zsmalloc.txt
+
+ZSWAP COMPRESSED SWAP CACHING
+M:	Seth Jennings <sjenning@linux.vnet.ibm.com>
+L:	linux-mm@kvack.org
+S:	Maintained
+F:	mm/zswap.c
 
 THE REST
 M:	Linus Torvalds <torvalds@linux-foundation.org>

@@ -76,7 +76,6 @@ MODULE_LICENSE ("GPL");
 /*----------------------------------------------------------------------*/
 
 #define GADGETFS_MAGIC		0xaee71ee7
-#define DMA_ADDR_INVALID	(~(dma_addr_t)0)
 
 /* /dev/gadget/$CHIP represents ep0 and the whole device */
 enum ep0_state {
@@ -839,7 +838,6 @@ ep_config (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 		if (value == 0)
 			data->state = STATE_EP_ENABLED;
 		break;
-#ifdef	CONFIG_USB_GADGET_DUALSPEED
 	case USB_SPEED_HIGH:
 		/* fails if caller didn't provide that descriptor... */
 		ep->desc = &data->hs_desc;
@@ -847,7 +845,6 @@ ep_config (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 		if (value == 0)
 			data->state = STATE_EP_ENABLED;
 		break;
-#endif
 	default:
 		DBG(data->dev, "unconnected, %s init abandoned\n",
 				data->name);
@@ -931,7 +928,6 @@ static void clean_req (struct usb_ep *ep, struct usb_request *req)
 	if (req->buf != dev->rbuf) {
 		kfree(req->buf);
 		req->buf = dev->rbuf;
-		req->dma = DMA_ADDR_INVALID;
 	}
 	req->complete = epio_complete;
 	dev->setup_out_ready = 0;
@@ -1009,8 +1005,11 @@ ep0_read (struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 			struct usb_ep		*ep = dev->gadget->ep0;
 			struct usb_request	*req = dev->req;
 
-			if ((retval = setup_req (ep, req, 0)) == 0)
-				retval = usb_ep_queue (ep, req, GFP_ATOMIC);
+			if ((retval = setup_req (ep, req, 0)) == 0) {
+				spin_unlock_irq (&dev->lock);
+				retval = usb_ep_queue (ep, req, GFP_KERNEL);
+				spin_lock_irq (&dev->lock);
+			}
 			dev->state = STATE_DEV_CONNECTED;
 
 			/* assume that was SET_CONFIGURATION */
@@ -1051,11 +1050,14 @@ ep0_read (struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 				retval = -EIO;
 			else {
 				len = min (len, (size_t)dev->req->actual);
-// FIXME don't call this with the spinlock held ...
+				++dev->udc_usage;
+				spin_unlock_irq(&dev->lock);
 				if (copy_to_user (buf, dev->req->buf, len))
 					retval = -EFAULT;
 				else
 					retval = len;
+				spin_lock_irq(&dev->lock);
+				--dev->udc_usage;
 				clean_req (dev->gadget->ep0, dev->req);
 				/* NOTE userspace can't yet choose to stall */
 			}
@@ -1335,7 +1337,6 @@ static const struct file_operations ep0_io_operations = {
  * Unrecognized ep0 requests may be handled in user space.
  */
 
-#ifdef	CONFIG_USB_GADGET_DUALSPEED
 static void make_qualifier (struct dev_data *dev)
 {
 	struct usb_qualifier_descriptor		qual;
@@ -1358,7 +1359,6 @@ static void make_qualifier (struct dev_data *dev)
 
 	memcpy (dev->rbuf, &qual, sizeof qual);
 }
-#endif
 
 static int
 config_buf (struct dev_data *dev, u8 type, unsigned index)
@@ -1423,7 +1423,6 @@ gadgetfs_setup (struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 		dev->setup_abort = 1;
 
 	req->buf = dev->rbuf;
-	req->dma = DMA_ADDR_INVALID;
 	req->context = NULL;
 	value = -EOPNOTSUPP;
 	switch (ctrl->bRequest) {
@@ -1438,7 +1437,6 @@ gadgetfs_setup (struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			dev->dev->bMaxPacketSize0 = dev->gadget->ep0->maxpacket;
 			req->buf = dev->dev;
 			break;
-#ifdef	CONFIG_USB_GADGET_DUALSPEED
 		case USB_DT_DEVICE_QUALIFIER:
 			if (!dev->hs_config)
 				break;
@@ -1448,7 +1446,6 @@ gadgetfs_setup (struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			break;
 		case USB_DT_OTHER_SPEED_CONFIG:
 			// FALLTHROUGH
-#endif
 		case USB_DT_CONFIG:
 			value = config_buf (dev,
 					w_value >> 8,
@@ -1544,8 +1541,11 @@ delegate:
 							w_length);
 				if (value < 0)
 					break;
+
+				spin_unlock (&dev->lock);
 				value = usb_ep_queue (gadget->ep0, dev->req,
-							GFP_ATOMIC);
+							GFP_KERNEL);
+				spin_lock (&dev->lock);
 				if (value < 0) {
 					clean_req (gadget->ep0, dev->req);
 					break;
@@ -1568,11 +1568,14 @@ delegate:
 	if (value >= 0 && dev->state != STATE_DEV_SETUP) {
 		req->length = value;
 		req->zero = value < w_length;
-		value = usb_ep_queue (gadget->ep0, req, GFP_ATOMIC);
+
+		spin_unlock (&dev->lock);
+		value = usb_ep_queue (gadget->ep0, req, GFP_KERNEL);
 		if (value < 0) {
 			DBG (dev, "ep_queue --> %d\n", value);
 			req->status = 0;
 		}
+		return value;
 	}
 
 	/* device stalls when value < 0 */
@@ -1774,11 +1777,6 @@ gadgetfs_suspend (struct usb_gadget *gadget)
 }
 
 static struct usb_gadget_driver gadgetfs_driver = {
-#ifdef	CONFIG_USB_GADGET_DUALSPEED
-	.max_speed	= USB_SPEED_HIGH,
-#else
-	.max_speed	= USB_SPEED_FULL,
-#endif
 	.function	= (char *) driver_desc,
 	.unbind		= gadgetfs_unbind,
 	.setup		= gadgetfs_setup,
@@ -1918,6 +1916,10 @@ dev_config (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 
 	/* triggers gadgetfs_bind(); then we can enumerate. */
 	spin_unlock_irq (&dev->lock);
+	if (dev->hs_config)
+		gadgetfs_driver.max_speed = USB_SPEED_HIGH;
+	else
+		gadgetfs_driver.max_speed = USB_SPEED_FULL;
 	value = usb_gadget_probe_driver(&gadgetfs_driver, gadgetfs_bind);
 	if (value != 0) {
 		kfree (dev->buf);

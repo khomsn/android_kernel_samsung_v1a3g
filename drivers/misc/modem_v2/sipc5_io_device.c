@@ -1073,7 +1073,7 @@ static int misc_open(struct inode *inode, struct file *filp)
 		}
 	}
 
-	mif_err("%s (opened %d)\n", iod->name, atomic_read(&iod->opened));
+	mif_info("%s (opened %d)\n", iod->name, atomic_read(&iod->opened));
 
 	return 0;
 }
@@ -1615,7 +1615,7 @@ int sipc5_init_io_device(struct io_device *iod)
 				mif_err("failed to create `dm_state' : %s\n",
 					iod->name);
 			else
-				mif_err("dm_state : %s, sucess\n", iod->name);
+				mif_info("dm_state : %s, sucess\n", iod->name);
 		}
 		break;
 

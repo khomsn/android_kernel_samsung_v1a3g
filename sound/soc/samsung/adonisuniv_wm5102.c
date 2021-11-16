@@ -1127,6 +1127,7 @@ static int set_drc1_ng_exp(struct snd_kcontrol *kcontrol,
 			drc1_ng_exp_values[drc1_ng_exp]);
 	return 0;
 }
+
 /******************************************************************/
 
 static int get_aif2_mode(struct snd_kcontrol *kcontrol,

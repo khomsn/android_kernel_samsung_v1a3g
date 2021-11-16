@@ -230,8 +230,16 @@ static struct usb_gadget_strings *acc_strings[] = {
 	NULL,
 };
 
-/* temporary variable used between acc_open() and acc_gadget_bind() */
 static struct acc_dev *_acc_dev;
+
+static struct acc_dev *get_acc_dev(void)
+{
+	return _acc_dev;
+}
+
+static void put_acc_dev(struct acc_dev *dev)
+{
+}
 
 static inline struct acc_dev *func_to_dev(struct usb_function *f)
 {
@@ -297,7 +305,10 @@ static void acc_set_disconnected(struct acc_dev *dev)
 
 static void acc_complete_in(struct usb_ep *ep, struct usb_request *req)
 {
-	struct acc_dev *dev = _acc_dev;
+	struct acc_dev *dev = get_acc_dev();
+
+	if (!dev)
+		return;
 
 	if (req->status != 0)
 		acc_set_disconnected(dev);
@@ -305,17 +316,22 @@ static void acc_complete_in(struct usb_ep *ep, struct usb_request *req)
 	req_put(dev, &dev->tx_idle, req);
 
 	wake_up(&dev->write_wq);
+	put_acc_dev(dev);
 }
 
 static void acc_complete_out(struct usb_ep *ep, struct usb_request *req)
 {
-	struct acc_dev *dev = _acc_dev;
+	struct acc_dev *dev = get_acc_dev();
+
+	if (!dev)
+		return;
 
 	dev->rx_done = 1;
 	if (req->status != 0)
 		acc_set_disconnected(dev);
 
 	wake_up(&dev->read_wq);
+	put_acc_dev(dev);
 }
 
 static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
@@ -549,15 +565,6 @@ static int create_bulk_endpoints(struct acc_dev *dev,
 	ep->driver_data = dev;		/* claim the endpoint */
 	dev->ep_out = ep;
 
-	ep = usb_ep_autoconfig(cdev->gadget, out_desc);
-	if (!ep) {
-		DBG(cdev, "usb_ep_autoconfig for ep_out failed\n");
-		return -ENODEV;
-	}
-	DBG(cdev, "usb_ep_autoconfig for ep_out got %s\n", ep->name);
-	ep->driver_data = dev;		/* claim the endpoint */
-	dev->ep_out = ep;
-
 	/* now allocate requests for our endpoints */
 	for (i = 0; i < TX_REQ_MAX; i++) {
 		req = acc_request_new(dev->ep_in, BULK_BUFFER_SIZE);
@@ -748,24 +755,36 @@ static long acc_ioctl(struct file *fp, unsigned code, unsigned long value)
 
 static int acc_open(struct inode *ip, struct file *fp)
 {
-	printk(KERN_INFO "acc_open\n");
-	if (atomic_xchg(&_acc_dev->open_excl, 1))
-		return -EBUSY;
+	struct acc_dev *dev = get_acc_dev();
 
-	_acc_dev->disconnected = 0;
-	fp->private_data = _acc_dev;
+	if (!dev)
+		return -ENODEV;
+
+	if (atomic_xchg(&dev->open_excl, 1)) {
+		put_acc_dev(dev);
+		return -EBUSY;
+	}
+
+	dev->disconnected = 0;
+	fp->private_data = dev;
 	return 0;
 }
 
 static int acc_release(struct inode *ip, struct file *fp)
 {
-	printk(KERN_INFO "acc_release\n");
+	struct acc_dev *dev = fp->private_data;
 
-	WARN_ON(!atomic_xchg(&_acc_dev->open_excl, 0));
+	if (!dev)
+		return -ENOENT;
+
+	WARN_ON(!atomic_xchg(&dev->open_excl, 0));
 	/* indicate that we are disconnected
 	 * still could be online so don't touch online flag
 	 */
-	_acc_dev->disconnected = 1;
+	dev->disconnected = 1;
+
+	fp->private_data = NULL;
+	put_acc_dev(dev);
 	return 0;
 }
 
@@ -810,7 +829,7 @@ static struct hid_driver acc_hid_driver = {
 static int acc_ctrlrequest(struct usb_composite_dev *cdev,
 				const struct usb_ctrlrequest *ctrl)
 {
-	struct acc_dev	*dev = _acc_dev;
+	struct acc_dev	*dev = get_acc_dev();
 	int	value = -EOPNOTSUPP;
 	struct acc_hid_dev *hid;
 	int offset;
@@ -821,12 +840,12 @@ static int acc_ctrlrequest(struct usb_composite_dev *cdev,
 	u16	w_length = le16_to_cpu(ctrl->wLength);
 	unsigned long flags;
 
-/*
-	printk(KERN_INFO "acc_ctrlrequest "
-			"%02x.%02x v%04x i%04x l%u\n",
-			b_requestType, b_request,
-			w_value, w_index, w_length);
-*/
+	/*
+	 * If instance is not created which is the case in power off charging
+	 * mode, dev will be NULL. Hence return error if it is the case.
+	 */
+	if (!dev)
+		return -ENODEV;
 
 	if (b_requestType == (USB_DIR_OUT | USB_TYPE_VENDOR)) {
 		if (b_request == ACCESSORY_START) {
@@ -909,6 +928,7 @@ err:
 			"%02x.%02x v%04x i%04x l%u\n",
 			ctrl->bRequestType, ctrl->bRequest,
 			w_value, w_index, w_length);
+	put_acc_dev(dev);
 	return value;
 }
 
@@ -1053,11 +1073,14 @@ static void acc_hid_delete(struct acc_hid_dev *hid)
 
 static void acc_hid_work(struct work_struct *data)
 {
-	struct acc_dev *dev = _acc_dev;
+	struct acc_dev *dev = get_acc_dev();
 	struct list_head	*entry, *temp;
 	struct acc_hid_dev *hid;
 	struct list_head	new_list, dead_list;
 	unsigned long flags;
+
+	if (!dev)
+		return;
 
 	INIT_LIST_HEAD(&new_list);
 
@@ -1104,6 +1127,8 @@ static void acc_hid_work(struct work_struct *data)
 			hid_destroy_device(hid->hid);
 		acc_hid_delete(hid);
 	}
+
+	put_acc_dev(dev);
 }
 
 static int acc_function_set_alt(struct usb_function *f,
@@ -1160,8 +1185,11 @@ static void acc_function_disable(struct usb_function *f)
 
 static int acc_bind_config(struct usb_configuration *c)
 {
-	struct acc_dev *dev = _acc_dev;
+	struct acc_dev  *dev = get_acc_dev();
 	int ret;
+
+	if (!dev)
+		return -ENODEV;
 
 	printk(KERN_INFO "acc_bind_config\n");
 
@@ -1177,7 +1205,7 @@ static int acc_bind_config(struct usb_configuration *c)
 	dev->cdev = c->cdev;
 	dev->function.name = "accessory";
 	dev->function.strings = acc_strings,
-	dev->function.descriptors = fs_acc_descs;
+	dev->function.fs_descriptors = fs_acc_descs;
 	dev->function.hs_descriptors = hs_acc_descs;
 	dev->function.ss_descriptors = ss_acc_descs;
 	dev->function.bind = acc_function_bind;
@@ -1185,6 +1213,7 @@ static int acc_bind_config(struct usb_configuration *c)
 	dev->function.set_alt = acc_function_set_alt;
 	dev->function.disable = acc_function_disable;
 
+	put_acc_dev(dev);
 	return usb_add_function(c, &dev->function);
 }
 
@@ -1208,7 +1237,6 @@ static int acc_setup(void)
 	INIT_DELAYED_WORK(&dev->start_work, acc_start_work);
 	INIT_WORK(&dev->hid_work, acc_hid_work);
 
-	/* _acc_dev must be set before calling usb_gadget_register_driver */
 	_acc_dev = dev;
 
 	ret = misc_register(&acc_device);
@@ -1225,13 +1253,21 @@ err:
 
 static void acc_disconnect(void)
 {
+	struct acc_dev *dev = get_acc_dev();
+
 	/* unregister all HID devices if USB is disconnected */
-	kill_all_hid_devices(_acc_dev);
+	if (dev)
+		kill_all_hid_devices(dev);
+
+	put_acc_dev(dev);
 }
 
 static void acc_cleanup(void)
 {
+	struct acc_dev *dev = _acc_dev;
+
 	misc_deregister(&acc_device);
-	kfree(_acc_dev);
+	put_acc_dev(dev);
+	kfree(dev);
 	_acc_dev = NULL;
 }

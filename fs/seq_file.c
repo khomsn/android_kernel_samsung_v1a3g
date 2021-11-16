@@ -9,6 +9,7 @@
 #include <linux/export.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/cred.h>
 
 #include <asm/uaccess.h>
 #include <asm/page.h>
@@ -16,17 +17,6 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #endif
-
-
-/*
- * seq_files have a buffer which can may overflow. When this happens a larger
- * buffer is reallocated and all the data will be printed again.
- * The overflow state is true when m->count == m->size.
- */
-static bool seq_overflow(struct seq_file *m)
-{
-	return m->count == m->size;
-}
 
 static void seq_set_overflow(struct seq_file *m)
 {
@@ -46,20 +36,26 @@ static void seq_set_overflow(struct seq_file *m)
  *	ERR_PTR(error).  In the end of sequence they return %NULL. ->show()
  *	returns 0 in case of success and negative number in case of error.
  *	Returning SEQ_SKIP means "discard this element and move on".
+ *	Note: seq_open() will allocate a struct seq_file and store its
+ *	pointer in @file->private_data. This pointer should not be modified.
  */
 int seq_open(struct file *file, const struct seq_operations *op)
 {
-	struct seq_file *p = file->private_data;
+	struct seq_file *p;
 
-	if (!p) {
-		p = kmalloc(sizeof(*p), GFP_KERNEL);
-		if (!p)
-			return -ENOMEM;
-		file->private_data = p;
-	}
-	memset(p, 0, sizeof(*p));
+	WARN_ON(file->private_data);
+
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	file->private_data = p;
+
 	mutex_init(&p->lock);
 	p->op = op;
+#ifdef CONFIG_USER_NS
+	p->user_ns = file->f_cred->user_ns;
+#endif
 
 	/*
 	 * Wrappers around seq_open(e.g. swaps_open) need to be
@@ -112,7 +108,7 @@ static int traverse(struct seq_file *m, loff_t offset)
 			error = 0;
 			m->count = 0;
 		}
-		if (seq_overflow(m))
+		if (seq_has_overflowed(m))
 			goto Eoverflow;
 		if (pos + m->count > offset) {
 			m->from = offset - pos;
@@ -272,7 +268,7 @@ Fill:
 			break;
 		}
 		err = m->op->show(m, p);
-		if (seq_overflow(m) || err) {
+		if (seq_has_overflowed(m) || err) {
 			m->count = offs;
 			if (likely(err <= 0))
 				break;

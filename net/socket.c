@@ -89,6 +89,7 @@
 #include <linux/magic.h>
 #include <linux/slab.h>
 #include <linux/nospec.h>
+#include <linux/xattr.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -105,8 +106,6 @@
 #include <linux/route.h>
 #include <linux/sockios.h>
 #include <linux/atalk.h>
-
-static BLOCKING_NOTIFIER_HEAD(sockev_notifier_list);
 
 static int sock_no_open(struct inode *irrelevant, struct file *dontcare);
 static ssize_t sock_aio_read(struct kiocb *iocb, const struct iovec *iov,
@@ -168,14 +167,6 @@ static const struct net_proto_family __rcu *net_families[NPROTO] __read_mostly;
 static DEFINE_PER_CPU(int, sockets_in_use);
 
 /*
- * Socket Event framework helpers
- */
-static void sockev_notify(unsigned long event, struct socket *sk)
-{
-	blocking_notifier_call_chain(&sockev_notifier_list, event, sk);
-}
-
-/**
  * Support routines.
  * Move socket addresses back and forth across the kernel/user
  * divide and look after the messy bits.
@@ -358,7 +349,8 @@ static struct file_system_type sock_fs_type = {
  *	but we take care of internal coherence yet.
  */
 
-static int sock_alloc_file(struct socket *sock, struct file **f, int flags)
+static int sock_alloc_file(struct socket *sock, struct file **f, int flags,
+			   const char *dname)
 {
 	struct qstr name = { .name = "" };
 	struct path path;
@@ -369,6 +361,13 @@ static int sock_alloc_file(struct socket *sock, struct file **f, int flags)
 	if (unlikely(fd < 0))
 		return fd;
 
+	if (dname) {
+		name.name = dname;
+		name.len = strlen(name.name);
+	} else if (sock->sk) {
+		name.name = sock->sk->sk_prot_creator->name;
+		name.len = strlen(name.name);
+	}
 	path.dentry = d_alloc_pseudo(sock_mnt->mnt_sb, &name);
 	if (unlikely(!path.dentry)) {
 		put_unused_fd(fd);
@@ -401,7 +400,7 @@ static int sock_alloc_file(struct socket *sock, struct file **f, int flags)
 int sock_map_fd(struct socket *sock, int flags)
 {
 	struct file *newfile;
-	int fd = sock_alloc_file(sock, &newfile, flags);
+	int fd = sock_alloc_file(sock, &newfile, flags, NULL);
 
 	if (likely(fd >= 0))
 		fd_install(fd, newfile);
@@ -466,6 +465,82 @@ static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
 	return NULL;
 }
 
+#define XATTR_SOCKPROTONAME_SUFFIX "sockprotoname"
+#define XATTR_NAME_SOCKPROTONAME (XATTR_SYSTEM_PREFIX XATTR_SOCKPROTONAME_SUFFIX)
+#define XATTR_NAME_SOCKPROTONAME_LEN (sizeof(XATTR_NAME_SOCKPROTONAME)-1)
+static ssize_t sockfs_getxattr(struct dentry *dentry,
+			       const char *name, void *value, size_t size)
+{
+	const char *proto_name;
+	size_t proto_size;
+	int error;
+
+	error = -ENODATA;
+	if (!strncmp(name, XATTR_NAME_SOCKPROTONAME, XATTR_NAME_SOCKPROTONAME_LEN)) {
+		proto_name = dentry->d_name.name;
+		proto_size = strlen(proto_name);
+
+		if (value) {
+			error = -ERANGE;
+			if (proto_size + 1 > size)
+				goto out;
+
+			strncpy(value, proto_name, proto_size + 1);
+		}
+		error = proto_size + 1;
+	}
+
+out:
+	return error;
+}
+
+static ssize_t sockfs_listxattr(struct dentry *dentry, char *buffer,
+				size_t size)
+{
+	ssize_t len;
+	ssize_t used = 0;
+
+	len = security_inode_listsecurity(dentry->d_inode, buffer, size);
+	if (len < 0)
+		return len;
+	used += len;
+	if (buffer) {
+		if (size < used)
+			return -ERANGE;
+		buffer += len;
+	}
+
+	len = (XATTR_NAME_SOCKPROTONAME_LEN + 1);
+	used += len;
+	if (buffer) {
+		if (size < used)
+			return -ERANGE;
+		memcpy(buffer, XATTR_NAME_SOCKPROTONAME, len);
+		buffer += len;
+	}
+
+	return used;
+}
+
+int sockfs_setattr(struct dentry *dentry, struct iattr *iattr)
+{
+	int err = simple_setattr(dentry, iattr);
+
+	if (!err && (iattr->ia_valid & ATTR_UID)) {
+		struct socket *sock = SOCKET_I(dentry->d_inode);
+
+		sock->sk->sk_uid = iattr->ia_uid;
+	}
+
+	return err;
+}
+
+static const struct inode_operations sockfs_inode_ops = {
+	.getxattr = sockfs_getxattr,
+	.listxattr = sockfs_listxattr,
+	.setattr = sockfs_setattr,
+};
+
 /**
  *	sock_alloc	-	allocate a socket
  *
@@ -490,6 +565,7 @@ static struct socket *sock_alloc(void)
 	inode->i_mode = S_IFSOCK | S_IRWXUGO;
 	inode->i_uid = current_fsuid();
 	inode->i_gid = current_fsgid();
+	inode->i_op = &sockfs_inode_ops;
 
 	percpu_add(sockets_in_use, 1);
 	return sock;
@@ -546,7 +622,7 @@ void sock_release(struct socket *sock)
 }
 EXPORT_SYMBOL(sock_release);
 
-int sock_tx_timestamp(struct sock *sk, __u8 *tx_flags)
+void sock_tx_timestamp(struct sock *sk, __u8 *tx_flags)
 {
 	*tx_flags = 0;
 	if (sock_flag(sk, SOCK_TIMESTAMPING_TX_HARDWARE))
@@ -555,7 +631,6 @@ int sock_tx_timestamp(struct sock *sk, __u8 *tx_flags)
 		*tx_flags |= SKBTX_SW_TSTAMP;
 	if (sock_flag(sk, SOCK_WIFI_STATUS))
 		*tx_flags |= SKBTX_WIFI_STATUS;
-	return 0;
 }
 EXPORT_SYMBOL(sock_tx_timestamp);
 
@@ -632,16 +707,6 @@ int kernel_sendmsg(struct socket *sock, struct msghdr *msg,
 }
 EXPORT_SYMBOL(kernel_sendmsg);
 
-static int ktime2ts(ktime_t kt, struct timespec *ts)
-{
-	if (kt.tv64) {
-		*ts = ktime_to_timespec(kt);
-		return 1;
-	} else {
-		return 0;
-	}
-}
-
 /*
  * called from sock_recv_timestamp() if sock_flag(sk, SOCK_RCVTSTAMP)
  */
@@ -674,17 +739,15 @@ void __sock_recv_timestamp(struct msghdr *msg, struct sock *sk,
 
 
 	memset(ts, 0, sizeof(ts));
-	if (skb->tstamp.tv64 &&
-	    sock_flag(sk, SOCK_TIMESTAMPING_SOFTWARE)) {
-		skb_get_timestampns(skb, ts + 0);
+	if (sock_flag(sk, SOCK_TIMESTAMPING_SOFTWARE) &&
+	    ktime_to_timespec_cond(skb->tstamp, ts + 0))
 		empty = 0;
-	}
 	if (shhwtstamps) {
 		if (sock_flag(sk, SOCK_TIMESTAMPING_SYS_HARDWARE) &&
-		    ktime2ts(shhwtstamps->syststamp, ts + 1))
+		    ktime_to_timespec_cond(shhwtstamps->syststamp, ts + 1))
 			empty = 0;
 		if (sock_flag(sk, SOCK_TIMESTAMPING_RAW_HARDWARE) &&
-		    ktime2ts(shhwtstamps->hwtstamp, ts + 2))
+		    ktime_to_timespec_cond(shhwtstamps->hwtstamp, ts + 2))
 			empty = 0;
 	}
 	if (!empty)
@@ -1358,9 +1421,6 @@ SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 	if (retval < 0)
 		goto out;
 
-	if (retval == 0)
-		sockev_notify(SOCKEV_SOCKET, sock);
-
 	retval = sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
 	if (retval < 0)
 		goto out_release;
@@ -1411,13 +1471,13 @@ SYSCALL_DEFINE4(socketpair, int, family, int, type, int, protocol,
 	if (err < 0)
 		goto out_release_both;
 
-	fd1 = sock_alloc_file(sock1, &newfile1, flags);
+	fd1 = sock_alloc_file(sock1, &newfile1, flags, NULL);
 	if (unlikely(fd1 < 0)) {
 		err = fd1;
 		goto out_release_both;
 	}
 
-	fd2 = sock_alloc_file(sock2, &newfile2, flags);
+	fd2 = sock_alloc_file(sock2, &newfile2, flags, NULL);
 	if (unlikely(fd2 < 0)) {
 		err = fd2;
 		fput(newfile1);
@@ -1478,8 +1538,6 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 						      &address, addrlen);
 		}
 		fput_light(sock->file, fput_needed);
-		if (!err)
-			sockev_notify(SOCKEV_BIND, sock);
 	}
 	return err;
 }
@@ -1507,8 +1565,6 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 			err = sock->ops->listen(sock, backlog);
 
 		fput_light(sock->file, fput_needed);
-		if (!err)
-			sockev_notify(SOCKEV_LISTEN, sock);
 	}
 	return err;
 }
@@ -1557,7 +1613,8 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	 */
 	__module_get(newsock->ops->owner);
 
-	newfd = sock_alloc_file(newsock, &newfile, flags);
+	newfd = sock_alloc_file(newsock, &newfile, flags,
+				sock->sk->sk_prot_creator->name);
 	if (unlikely(newfd < 0)) {
 		err = newfd;
 		sock_release(newsock);
@@ -1588,8 +1645,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 
 	fd_install(newfd, newfile);
 	err = newfd;
-	if (!err)
-		sockev_notify(SOCKEV_ACCEPT, sock);
+
 out_put:
 	fput_light(sock->file, fput_needed);
 out:
@@ -1639,8 +1695,6 @@ SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
 
 	err = sock->ops->connect(sock, (struct sockaddr *)&address, addrlen,
 				 sock->file->f_flags);
-	if (!err)
-		sockev_notify(SOCKEV_CONNECT, sock);
 out_put:
 	fput_light(sock->file, fput_needed);
 out:
@@ -1907,7 +1961,6 @@ SYSCALL_DEFINE2(shutdown, int, fd, int, how)
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock != NULL) {
-		sockev_notify(SOCKEV_SHUTDOWN, sock);
 		err = security_socket_shutdown(sock, how);
 		if (!err)
 			err = sock->ops->shutdown(sock, how);
@@ -3478,15 +3531,3 @@ int kernel_sock_shutdown(struct socket *sock, enum sock_shutdown_cmd how)
 	return sock->ops->shutdown(sock, how);
 }
 EXPORT_SYMBOL(kernel_sock_shutdown);
-
-int sockev_register_notify(struct notifier_block *nb)
-{
-	return blocking_notifier_chain_register(&sockev_notifier_list, nb);
-}
-EXPORT_SYMBOL(sockev_register_notify);
-
-int sockev_unregister_notify(struct notifier_block *nb)
-{
-	return blocking_notifier_chain_unregister(&sockev_notifier_list, nb);
-}
-EXPORT_SYMBOL(sockev_unregister_notify);

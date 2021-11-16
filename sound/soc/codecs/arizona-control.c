@@ -293,7 +293,7 @@ static struct arizona_control ctls[] = {
 	_ctl("drc_hp_attack_rate", CTL_ACTIVE, ARIZONA_DRC1_CTRL2,
 		ARIZONA_DRC1_ATK_MASK, ARIZONA_DRC1_ATK_SHIFT, __simple),
 	_ctl("drc_hp_decay_rate", CTL_ACTIVE, ARIZONA_DRC1_CTRL2,
-		ARIZONA_DRC1_DCY_MASK, ARIZONA_DRC1_DCY_SHIFT, __simple),
+		ARIZONA_DRC1_ATK_MASK, ARIZONA_DRC1_ATK_SHIFT, __simple),
 	_ctl("drc_hp_min_gain", CTL_ACTIVE, ARIZONA_DRC1_CTRL2,
 		ARIZONA_DRC1_MINGAIN_MASK, ARIZONA_DRC1_MINGAIN_SHIFT, __simple),
 	_ctl("drc_hp_max_gain", CTL_ACTIVE, ARIZONA_DRC1_CTRL2,

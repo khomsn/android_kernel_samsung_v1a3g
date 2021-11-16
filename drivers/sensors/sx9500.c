@@ -97,8 +97,8 @@ struct sx9500_p {
 	atomic_t enable;
 };
 
-#if defined(CONFIG_CHAGALL_LTE)
-#define SX9500_NORMAL_TOUCH_CABLE_THRESHOLD	22
+#if defined(CONFIG_TARGET_LOCALE_USA) && defined(CONFIG_CHAGALL_LTE)
+#define SX9500_NORMAL_TOUCH_CABLE_THRESHOLD	20
 extern bool is_cable_attached;
 #endif
 
@@ -206,7 +206,7 @@ static int sx9500_set_offset_calibration(struct sx9500_p *data)
 static void send_event(struct sx9500_p *data, int cnt, u8 state)
 {
 	u8 buf;
-#if defined(CONFIG_CHAGALL_LTE)
+#if defined(CONFIG_TARGET_LOCALE_USA) && defined(CONFIG_CHAGALL_LTE)
 	if (is_cable_attached == true) {
 		buf = SX9500_NORMAL_TOUCH_CABLE_THRESHOLD;
 		pr_info("[SX9500]: %s - cable connected\n", __func__);

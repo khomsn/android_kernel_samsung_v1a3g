@@ -1316,26 +1316,6 @@ static int ep_modify(struct eventpoll *ep, struct epitem *epi, struct epoll_even
 	smp_mb();
 
 	/*
-	 * The following barrier has two effects:
-	 *
-	 * 1) Flush epi changes above to other CPUs.  This ensures
-	 *    we do not miss events from ep_poll_callback if an
-	 *    event occurs immediately after we call f_op->poll().
-	 *    We need this because we did not take ep->lock while
-	 *    changing epi above (but ep_poll_callback does take
-	 *    ep->lock).
-	 *
-	 * 2) We also need to ensure we do not miss _past_ events
-	 *    when calling f_op->poll().  This barrier also
-	 *    pairs with the barrier in wq_has_sleeper (see
-	 *    comments for wq_has_sleeper).
-	 *
-	 * This barrier will now guarantee ep_poll_callback or f_op->poll
-	 * (or both) will notice the readiness of an item.
-	 */
-	smp_mb();
-
-	/*
 	 * Get current event bits. We can safely use the file* here because
 	 * its usage count has been increased by the caller of this function.
 	 */
@@ -1488,7 +1468,7 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 {
 	int res = 0, eavail, timed_out = 0;
 	unsigned long flags;
-	long slack = 0;
+	u64 slack = 0;
 	wait_queue_t wait;
 	ktime_t expires, *to = NULL;
 
@@ -1609,9 +1589,11 @@ static int ep_loop_check_proc(void *priv, void *cookie, int call_nests)
 			 * not already there, and calling reverse_path_check()
 			 * during ep_insert().
 			 */
-			if (list_empty(&epi->ffd.file->f_tfile_llink))
-				list_add(&epi->ffd.file->f_tfile_llink,
-					 &tfile_check_list);
+			if (list_empty(&epi->ffd.file->f_tfile_llink)) {
+				if (get_file_rcu(epi->ffd.file))
+					list_add(&epi->ffd.file->f_tfile_llink,
+						 &tfile_check_list);
+			}
 		}
 	}
 	mutex_unlock(&ep->mtx);
@@ -1655,6 +1637,7 @@ static void clear_tfile_check_list(void)
 		file = list_first_entry(&tfile_check_list, struct file,
 					f_tfile_llink);
 		list_del_init(&file->f_tfile_llink);
+		fput(file);
 	}
 	INIT_LIST_HEAD(&tfile_check_list);
 }
@@ -1791,8 +1774,10 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 				clear_tfile_check_list();
 				goto error_tgt_fput;
 			}
-		} else
+		} else {
+			get_file(tfile);
 			list_add(&tfile->f_tfile_llink, &tfile_check_list);
+		}
 	}
 
 	mutex_lock_nested(&ep->mtx, 0);

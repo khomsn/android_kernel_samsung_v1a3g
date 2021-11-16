@@ -125,7 +125,7 @@ static int mxt_power_on(void)
 	s3c_gpio_setpull(GPIO_TOUCH_CHG, S3C_GPIO_PULL_NONE);
 
 	msleep(100);
-	printk(KERN_ERR "[TSP] power on\n");
+	printk(KERN_INFO "[TSP] power on\n");
 
 	return 0;
 }
@@ -157,7 +157,7 @@ static int mxt_power_off(void)
 	/* touch interrupt pin */
 	s3c_gpio_cfgpin(GPIO_TOUCH_CHG, S3C_GPIO_INPUT);
 	s3c_gpio_setpull(GPIO_TOUCH_CHG, S3C_GPIO_PULL_NONE);
-	printk(KERN_ERR "[TSP] power off\n");
+	printk(KERN_INFO "[TSP] power off\n");
 
 	return 0;
 }
@@ -238,7 +238,7 @@ static int mxt_led_power_on(void)
 
 	regulator_put(regulator);
 
-	printk(KERN_ERR "[KEYLED] on\n");
+	printk(KERN_INFO "[KEYLED] on\n");
 	return 0;
 }
 
@@ -261,7 +261,7 @@ static int mxt_led_power_off(void)
 
 	regulator_put(regulator);
 
-	printk(KERN_ERR "[KEYLED] off\n");
+	printk(KERN_INFO "[KEYLED] off\n");
 	return 0;
 }
 #endif
@@ -332,7 +332,7 @@ void __init atmel_tsp_init(void)
 	s3c_i2c0_set_platdata(&touch_i2c0_platdata);
 	i2c_register_board_info(0, mxt_i2c_devs0, ARRAY_SIZE(mxt_i2c_devs0));
 
-	printk(KERN_ERR "%s touch : %d [%d]\n",
+	printk(KERN_INFO "%s touch : %d [%d]\n",
 		 		__func__, mxt_i2c_devs0[0].irq, system_rev);
 }
 #endif

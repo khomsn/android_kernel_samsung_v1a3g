@@ -45,9 +45,7 @@
 
 #include "f_fs.c"
 #include "f_audio_source.c"
-#ifdef CONFIG_SND_USB_AUDIO
 #include "f_midi.c"
-#endif
 #include "f_mass_storage.c"
 #include "u_serial.c"
 #ifdef CONFIG_USB_DUN_SUPPORT
@@ -90,13 +88,11 @@ int exynos_ss_udc_get_ss_host_available(struct usb_gadget *gadget);
 #define VENDOR_ID		0x18D1
 #define PRODUCT_ID		0x0001
 
-#ifdef CONFIG_SND_USB_AUDIO
 /* f_midi configuration */
 #define MIDI_INPUT_PORTS    1
 #define MIDI_OUTPUT_PORTS   1
 #define MIDI_BUFFER_SIZE    256
 #define MIDI_QUEUE_LENGTH   32
-#endif
 
 /* DM_PORT NUM : /dev/ttyGS* port number */
 #define DM_PORT_NUM            1
@@ -139,6 +135,9 @@ struct android_dev {
 	struct list_head enabled_functions;
 	struct usb_composite_dev *cdev;
 	struct device *dev;
+
+	void (*setup_complete)(struct usb_ep *ep,
+			struct usb_request *req);
 
 	bool enabled;
 	int disable_depth;
@@ -204,7 +203,6 @@ static struct usb_device_descriptor device_desc = {
 	.bDeviceClass         = USB_CLASS_PER_INTERFACE,
 	.idVendor             = __constant_cpu_to_le16(VENDOR_ID),
 	.idProduct            = __constant_cpu_to_le16(PRODUCT_ID),
-	.bcdDevice            = __constant_cpu_to_le16(0xffff),
 	.bNumConfigurations   = 1,
 };
 
@@ -212,8 +210,12 @@ static struct usb_configuration android_config_driver = {
 	.label		= "android",
 	.unbind		= android_unbind_config,
 	.bConfigurationValue = 1,
-	.bmAttributes	= USB_CONFIG_ATT_ONE | USB_CONFIG_ATT_SELFPOWER,
-	.bMaxPower	= 0x30, /* 96ma */
+};
+
+enum android_device_state {
+	USB_DISCONNECTED,
+	USB_CONNECTED,
+	USB_CONFIGURED,
 };
 
 static void android_work(struct work_struct *data)
@@ -224,21 +226,48 @@ static void android_work(struct work_struct *data)
 	char *connected[2]    = { "USB_STATE=CONNECTED", NULL };
 	char *configured[2]   = { "USB_STATE=CONFIGURED", NULL };
 	char **uevent_envp = NULL;
+	static enum android_device_state last_uevent, next_state;
 	unsigned long flags;
 
 	printk(KERN_DEBUG "usb: %s config=%p,connected=%d,sw_connected=%d\n",
 			__func__, cdev->config, dev->connected,
 			dev->sw_connected);
 	spin_lock_irqsave(&cdev->lock, flags);
-	if (cdev->config)
+	if (cdev->config) {
 		uevent_envp = configured;
-	else if (dev->connected != dev->sw_connected)
+		next_state = USB_CONFIGURED;
+	} else if (dev->connected != dev->sw_connected) {
 		uevent_envp = dev->connected ? connected : disconnected;
+		next_state = dev->connected ? USB_CONNECTED : USB_DISCONNECTED;
+	}
 	dev->sw_connected = dev->connected;
 	spin_unlock_irqrestore(&cdev->lock, flags);
 
 	if (uevent_envp) {
+		/*
+		 * Some userspace modules, e.g. MTP, work correctly only if
+		 * CONFIGURED uevent is preceded by DISCONNECT uevent.
+		 * Check if we missed sending out a DISCONNECT uevent. This can
+		 * happen if host PC resets and configures device really quick.
+		 */
+		if (((uevent_envp == connected) &&
+		      (last_uevent != USB_DISCONNECTED)) ||
+		    ((uevent_envp == configured) &&
+		      (last_uevent == USB_CONFIGURED))) {
+			pr_info("%s: sent missed DISCONNECT event\n", __func__);
+			kobject_uevent_env(&dev->dev->kobj, KOBJ_CHANGE,
+								disconnected);
+			msleep(20);
+		}
+		/*
+		 * Before sending out CONFIGURED uevent give function drivers
+		 * a chance to wakeup userspace threads and notify disconnect
+		 */
+		if (uevent_envp == configured)
+			msleep(50);
+
 		kobject_uevent_env(&dev->dev->kobj, KOBJ_CHANGE, uevent_envp);
+		last_uevent = next_state;
 		printk(KERN_DEBUG "usb: %s sent uevent %s\n",
 			 __func__, uevent_envp[0]);
 	} else {
@@ -1347,7 +1376,6 @@ static struct android_usb_function audio_source_function = {
 	.attributes	= audio_source_function_attributes,
 };
 
-#ifdef CONFIG_SND_USB_AUDIO
 static int midi_function_init(struct android_usb_function *f,
 					struct usb_composite_dev *cdev)
 {
@@ -1402,7 +1430,6 @@ static struct android_usb_function midi_function = {
 	.bind_config	= midi_function_bind_config,
 	.attributes	= midi_function_attributes,
 };
-#endif
 
 static struct android_usb_function *supported_functions[] = {
 	&ffs_function,
@@ -1424,9 +1451,7 @@ static struct android_usb_function *supported_functions[] = {
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_SIDESYNC
 		&conn_gadget_function,
 #endif
-#ifdef CONFIG_SND_USB_AUDIO
 	&midi_function,
-#endif
 	NULL
 };
 
@@ -1546,6 +1571,32 @@ static int android_enable_function(struct android_dev *dev, char *name)
 /*-------------------------------------------------------------------------*/
 /* /sys/class/android_usb/android%d/ interface */
 
+static ssize_t remote_wakeup_show(struct device *pdev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			!!(android_config_driver.bmAttributes &
+				USB_CONFIG_ATT_WAKEUP));
+}
+
+static ssize_t remote_wakeup_store(struct device *pdev,
+		struct device_attribute *attr, const char *buff, size_t size)
+{
+	int enable = 0;
+
+	sscanf(buff, "%d", &enable);
+
+	pr_debug("android_usb: %s remote wakeup\n",
+			enable ? "enabling" : "disabling");
+
+	if (enable)
+		android_config_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
+	else
+		android_config_driver.bmAttributes &= ~USB_CONFIG_ATT_WAKEUP;
+
+	return size;
+}
+
 static ssize_t
 functions_show(struct device *pdev, struct device_attribute *attr, char *buf)
 {
@@ -1599,8 +1650,6 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 
 	while (b) {
 		name = strsep(&b, ",");
-		if (!name)
-			continue;
 
 		is_ffs = 0;
 		strlcpy(aliases, dev->ffs_aliases, sizeof(aliases));
@@ -1689,19 +1738,14 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 	printk(KERN_DEBUG "usb: %s enabled=%d, !dev->enabled=%d\n",
 			__func__, enabled, !dev->enabled);
 	if (enabled && !dev->enabled) {
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
-		struct android_usb_function *f;
-		cdev->next_string_id = composite_string_index;
-#else
-		cdev->next_string_id = 0;
-#endif
 		/*
 		 * Update values in composite driver's copy of
 		 * device descriptor.
 		 */
 		cdev->desc.idVendor = device_desc.idVendor;
 		cdev->desc.idProduct = device_desc.idProduct;
-		cdev->desc.bcdDevice = device_desc.bcdDevice;
+		if (device_desc.bcdDevice)
+			cdev->desc.bcdDevice = device_desc.bcdDevice;
 		cdev->desc.bDeviceClass = device_desc.bDeviceClass;
 
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
@@ -1852,7 +1896,9 @@ field ## _store(struct device *dev, struct device_attribute *attr,	\
 {									\
 	if (size >= sizeof(buffer))					\
 		return -EINVAL;						\
-	return strlcpy(buffer, buf, sizeof(buffer));			\
+	strlcpy(buffer, buf, sizeof(buffer));				\
+	strim(buffer);							\
+	return size;							\
 }									\
 static DEVICE_ATTR(field, S_IRUGO | S_IWUSR, field ## _show, field ## _store);
 
@@ -1985,6 +2031,9 @@ static DEVICE_ATTR(usb30en,S_IRUGO | S_IWUSR, usb30en_show, usb30en_store);
 static DEVICE_ATTR(macos,S_IRUGO | S_IWUSR, macos_show, NULL);
 static DEVICE_ATTR(ss_host_available,S_IRUGO | S_IWUSR, ss_host_available_show, NULL);
 #endif
+static DEVICE_ATTR(remote_wakeup, S_IRUGO | S_IWUSR,
+		remote_wakeup_show, remote_wakeup_store);
+
 static struct device_attribute *android_usb_attributes[] = {
 	&dev_attr_idVendor,
 	&dev_attr_idProduct,
@@ -2004,6 +2053,7 @@ static struct device_attribute *android_usb_attributes[] = {
 	&dev_attr_macos,
 	&dev_attr_ss_host_available,
 #endif
+	&dev_attr_remote_wakeup,
 	NULL
 };
 
@@ -2083,8 +2133,10 @@ static int android_bind(struct usb_composite_dev *cdev)
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 	composite_string_index = 4;
 #endif
-	usb_gadget_set_selfpowered(gadget);
 	dev->cdev = cdev;
+
+	/* Save the default handler */
+	dev->setup_complete = cdev->req->complete;
 
 	return 0;
 }
@@ -2115,10 +2167,12 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 	struct android_usb_function	*f;
 	int value = -EOPNOTSUPP;
 	unsigned long flags;
+	bool do_work = false;
 
 	req->zero = 0;
 	req->complete = composite_setup_complete;
 	req->length = 0;
+	req->complete = dev->setup_complete;
 	gadget->ep0->driver_data = cdev;
 
 	list_for_each_entry(f, &dev->enabled_functions, enabled_list) {
@@ -2150,13 +2204,14 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 #endif
 	if (!dev->connected) {
 		dev->connected = 1;
-		schedule_work(&dev->work);
+		do_work = true;
 	} else if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
-		schedule_work(&dev->work);
+		do_work = true;
 	}
 	spin_unlock_irqrestore(&cdev->lock, flags);
-
+	if (do_work)
+		schedule_work(&dev->work);
 	return value;
 }
 

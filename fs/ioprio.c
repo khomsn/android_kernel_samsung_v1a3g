@@ -37,8 +37,8 @@ int set_task_ioprio(struct task_struct *task, int ioprio)
 
 	rcu_read_lock();
 	tcred = __task_cred(task);
-	if (tcred->uid != cred->euid &&
-	    tcred->uid != cred->uid && !capable(CAP_SYS_NICE)) {
+	if (!uid_eq(tcred->uid, cred->euid) &&
+	    !uid_eq(tcred->uid, cred->uid) && !capable(CAP_SYS_NICE)) {
 		rcu_read_unlock();
 		return -EPERM;
 	}
@@ -144,8 +144,8 @@ static int get_task_ioprio(struct task_struct *p)
 	ret = security_task_getioprio(p);
 	if (ret)
 		goto out;
-	task_lock(p);
 	ret = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_NONE, IOPRIO_NORM);
+	task_lock(p);
 	if (p->io_context)
 		ret = p->io_context->ioprio;
 	task_unlock(p);

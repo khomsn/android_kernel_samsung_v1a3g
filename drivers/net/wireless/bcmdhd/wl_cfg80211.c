@@ -10152,7 +10152,11 @@ wl_notify_rx_mgmt_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 		WL_DBG((" Event WLC_E_PROBREQ_MSG received\n"));
 		mgmt_frame = (u8 *)(data);
 		mgmt_frame_len = ntoh32(e->datalen);
-
+		if (mgmt_frame_len < DOT11_MGMT_HDR_LEN) {
+			WL_ERR(("WLC_E_PROBREQ_MSG - wrong datalen:%d\n",
+				mgmt_frame_len));
+			return -EINVAL;
+		}
 		prbreq_ie_len = mgmt_frame_len - DOT11_MGMT_HDR_LEN;
 
 		/* Parse prob_req IEs */

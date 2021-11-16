@@ -100,7 +100,7 @@ qh_update (struct ehci_hcd *ehci, struct ehci_qh *qh, struct ehci_qtd *qtd)
 	 * and set the pseudo-toggle in udev. Only usb_clear_halt() will
 	 * ever clear it.
 	 */
-	if (!(hw->hw_info1 & cpu_to_hc32(ehci, 1 << 14))) {
+	if (!(hw->hw_info1 & cpu_to_hc32(ehci, QH_TOGGLE_CTL))) {
 		unsigned	is_out, epnum;
 
 		is_out = qh->is_out;
@@ -135,7 +135,7 @@ qh_refresh (struct ehci_hcd *ehci, struct ehci_qh *qh)
 		 * qtd is updated in qh_completions(). Update the QH
 		 * overlay here.
 		 */
-		if (cpu_to_hc32(ehci, qtd->qtd_dma) == qh->hw->hw_current) {
+		if (qh->hw->hw_token & ACTIVE_BIT(ehci)) {
 			qh->hw->hw_qtd_next = qtd->hw_next;
 			qtd = NULL;
 		}
@@ -264,17 +264,13 @@ ehci_urb_done(struct ehci_hcd *ehci, struct urb *urb, int status)
 __releases(ehci->lock)
 __acquires(ehci->lock)
 {
-	if (likely (urb->hcpriv != NULL)) {
-		struct ehci_qh	*qh = (struct ehci_qh *) urb->hcpriv;
-
-		/* S-mask in a QH means it's an interrupt urb */
-		if ((qh->hw->hw_info2 & cpu_to_hc32(ehci, QH_SMASK)) != 0) {
-
-			/* ... update hc-wide periodic stats (for usbfs) */
-			ehci_to_hcd(ehci)->self.bandwidth_int_reqs--;
-		}
-		qh_put (qh);
+	if (usb_pipetype(urb->pipe) == PIPE_INTERRUPT) {
+		/* ... update hc-wide periodic stats */
+		ehci_to_hcd(ehci)->self.bandwidth_int_reqs--;
 	}
+
+	if (usb_pipetype(urb->pipe) != PIPE_ISOCHRONOUS)
+		qh_put((struct ehci_qh *) urb->hcpriv);
 
 	if (unlikely(urb->unlinked)) {
 		COUNT(ehci->stats.unlink);
@@ -287,7 +283,7 @@ __acquires(ehci->lock)
 
 #ifdef EHCI_URB_TRACE
 	ehci_dbg (ehci,
-		"%s %s urb %pK ep%d%s status %d len %d/%d\n",
+		"%s %s urb %p ep%d%s status %d len %d/%d\n",
 		__func__, urb->dev->devpath, urb,
 		usb_pipeendpoint (urb->pipe),
 		usb_pipein (urb->pipe) ? "in" : "out",
@@ -297,7 +293,7 @@ __acquires(ehci->lock)
 #if defined(CONFIG_MDM_HSIC_PM)
 	if (usb_pipeint(urb->pipe) && usb_pipein(urb->pipe))
 		ehci_dbg (ehci,
-				"%s %s urb %pK ep%d%s status %d len %d/%d\n",
+				"%s %s urb %p ep%d%s status %d len %d/%d\n",
 				__func__, urb->dev->devpath, urb,
 				usb_pipeendpoint (urb->pipe),
 				usb_pipein (urb->pipe) ? "in" : "out",
@@ -401,7 +397,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			/* Report Data Buffer Error: non-fatal but useful */
 			if (token & QTD_STS_DBE)
 				ehci_dbg(ehci,
-					"detected DataBufferErr for urb %pK ep%d%s len %d, qtd %pK [qh %pK]\n",
+					"detected DataBufferErr for urb %p ep%d%s len %d, qtd %p [qh %p]\n",
 					urb,
 					usb_endpoint_num(&urb->ep->desc),
 					usb_endpoint_dir_in(&urb->ep->desc) ? "in" : "out",
@@ -459,7 +455,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 		/* stop scanning when we reach qtds the hc is using */
 		} else if (likely (!stopped
-				&& ehci->rh_state == EHCI_RH_RUNNING)) {
+				&& ehci->rh_state >= EHCI_RH_RUNNING)) {
 			break;
 
 		/* scan the whole queue for unlinks whenever it stops */
@@ -467,7 +463,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			stopped = 1;
 
 			/* cancel everything if we halt, suspend, etc */
-			if (ehci->rh_state != EHCI_RH_RUNNING)
+			if (ehci->rh_state < EHCI_RH_RUNNING)
 				last_status = -ESHUTDOWN;
 
 			/* this qtd is active; skip it unless a previous qtd
@@ -476,11 +472,19 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			else if (last_status == -EINPROGRESS && !urb->unlinked)
 				continue;
 
-			/* qh unlinked; token in overlay may be most current */
-			if (state == QH_STATE_IDLE
-					&& cpu_to_hc32(ehci, qtd->qtd_dma)
-						== hw->hw_current) {
+			/*
+			 * If this was the active qtd when the qh was unlinked
+			 * and the overlay's token is active, then the overlay
+			 * hasn't been written back to the qtd yet so use its
+			 * token instead of the qtd's.  After the qtd is
+			 * processed and removed, the overlay won't be valid
+			 * any more.
+			 */
+			if (state == QH_STATE_IDLE &&
+					qh->qtd_list.next == &qtd->qtd_list &&
+					(hw->hw_token & ACTIVE_BIT(ehci))) {
 				token = hc32_to_cpu(ehci, hw->hw_token);
+				hw->hw_token &= ~ACTIVE_BIT(ehci);
 
 				/* An unlink may leave an incomplete
 				 * async transaction in the TT buffer.
@@ -912,7 +916,7 @@ qh_make (
 	/* using TT? */
 	switch (urb->dev->speed) {
 	case USB_SPEED_LOW:
-		info1 |= (1 << 12);	/* EPS "low" */
+		info1 |= QH_LOW_SPEED;
 		/* FALL THROUGH */
 
 	case USB_SPEED_FULL:
@@ -920,8 +924,8 @@ qh_make (
 		if (type != PIPE_INTERRUPT)
 			info1 |= (EHCI_TUNE_RL_TT << 28);
 		if (type == PIPE_CONTROL) {
-			info1 |= (1 << 27);	/* for TT */
-			info1 |= 1 << 14;	/* toggle from qtd */
+			info1 |= QH_CONTROL_EP;		/* for TT */
+			info1 |= QH_TOGGLE_CTL;		/* toggle from qtd */
 		}
 		info1 |= maxp << 16;
 
@@ -946,11 +950,11 @@ qh_make (
 		break;
 
 	case USB_SPEED_HIGH:		/* no TT involved */
-		info1 |= (2 << 12);	/* EPS "high" */
+		info1 |= QH_HIGH_SPEED;
 		if (type == PIPE_CONTROL) {
 			info1 |= (EHCI_TUNE_RL_HS << 28);
 			info1 |= 64 << 16;	/* usb2 fixed maxpacket */
-			info1 |= 1 << 14;	/* toggle from qtd */
+			info1 |= QH_TOGGLE_CTL;	/* toggle from qtd */
 			info2 |= (EHCI_TUNE_MULT_HS << 30);
 		} else if (type == PIPE_BULK) {
 			info1 |= (EHCI_TUNE_RL_HS << 28);
@@ -968,7 +972,8 @@ qh_make (
 		}
 		break;
 	default:
-		dbg ("bogus dev %pK speed %d", urb->dev, urb->dev->speed);
+		ehci_dbg(ehci, "bogus dev %p speed %d\n", urb->dev,
+			urb->dev->speed);
 done:
 		qh_put (qh);
 		return NULL;
@@ -1006,14 +1011,12 @@ static void qh_link_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	head = ehci->async;
 	timer_action_done (ehci, TIMER_ASYNC_OFF);
 	if (!head->qh_next.qh) {
-		u32	cmd = ehci_readl(ehci, &ehci->regs->command);
-
-		if (!(cmd & CMD_ASE)) {
+		if (!(ehci->command & CMD_ASE)) {
 			/* in case a clear of CMD_ASE didn't take yet */
 			(void)handshake(ehci, &ehci->regs->status,
 					STS_ASS, 0, 150);
-			cmd |= CMD_ASE;
-			ehci_writel(ehci, cmd, &ehci->regs->command);
+			ehci->command |= CMD_ASE;
+			ehci_writel(ehci, ehci->command, &ehci->regs->command);
 			/* posted write need not be known to HC yet ... */
 		}
 	}
@@ -1143,7 +1146,7 @@ submit_async (
 		struct ehci_qtd *qtd;
 		qtd = list_entry(qtd_list->next, struct ehci_qtd, qtd_list);
 		ehci_dbg(ehci,
-			 "%s %s urb %pK ep%d%s len %d, qtd %pK [qh %pK]\n",
+			 "%s %s urb %p ep%d%s len %d, qtd %p [qh %p]\n",
 			 __func__, urb->dev->devpath, urb,
 			 epnum & 0x0f, (epnum & USB_DIR_IN) ? "in" : "out",
 			 urb->transfer_buffer_length,
@@ -1181,11 +1184,11 @@ submit_async (
 
 /*-------------------------------------------------------------------------*/
 
-/* the async qh for the qtds being reclaimed are now unlinked from the HC */
+/* the async qh for the qtds being unlinked are now gone from the HC */
 
 static void end_unlink_async (struct ehci_hcd *ehci)
 {
-	struct ehci_qh		*qh = ehci->reclaim;
+	struct ehci_qh		*qh = ehci->async_unlink;
 	struct ehci_qh		*next;
 
 	iaa_watchdog_done(ehci);
@@ -1196,9 +1199,9 @@ static void end_unlink_async (struct ehci_hcd *ehci)
 	qh_put (qh);			// refcount from reclaim
 
 	/* other unlink(s) may be pending (in QH_STATE_UNLINK_WAIT) */
-	next = qh->reclaim;
-	ehci->reclaim = next;
-	qh->reclaim = NULL;
+	next = qh->unlink_next;
+	ehci->async_unlink = next;
+	qh->unlink_next = NULL;
 
 	qh_completions (ehci, qh);
 
@@ -1215,7 +1218,7 @@ static void end_unlink_async (struct ehci_hcd *ehci)
 	qh_put(qh);			/* refcount from async list */
 
 	if (next) {
-		ehci->reclaim = NULL;
+		ehci->async_unlink = NULL;
 		start_unlink_async (ehci, next);
 	}
 
@@ -1229,12 +1232,11 @@ static void end_unlink_async (struct ehci_hcd *ehci)
 
 static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 {
-	int		cmd = ehci_readl(ehci, &ehci->regs->command);
 	struct ehci_qh	*prev;
 
 #ifdef DEBUG
 	assert_spin_locked(&ehci->lock);
-	if (ehci->reclaim
+	if (ehci->async_unlink
 			|| (qh->qh_state != QH_STATE_LINKED
 				&& qh->qh_state != QH_STATE_UNLINK_WAIT)
 			)
@@ -1245,10 +1247,10 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	if (unlikely (qh == ehci->async)) {
 		/* can't get here without STS_ASS set */
 		if (ehci->rh_state != EHCI_RH_HALTED
-				&& !ehci->reclaim) {
+				&& !ehci->async_unlink) {
 			/* ... and CMD_IAAD clear */
-			ehci_writel(ehci, cmd & ~CMD_ASE,
-				    &ehci->regs->command);
+			ehci->command &= ~CMD_ASE;
+			ehci_writel(ehci, ehci->command, &ehci->regs->command);
 			wmb ();
 			// handshake later, if we need to
 			timer_action_done (ehci, TIMER_ASYNC_OFF);
@@ -1257,7 +1259,7 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	}
 
 	qh->qh_state = QH_STATE_UNLINK;
-	ehci->reclaim = qh = qh_get (qh);
+	ehci->async_unlink = qh = qh_get (qh);
 
 	prev = ehci->async;
 	while (prev->qh_next.qh != qh)
@@ -1270,16 +1272,15 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	wmb ();
 
 	/* If the controller isn't running, we don't have to wait for it */
-	if (unlikely(ehci->rh_state != EHCI_RH_RUNNING)) {
-		/* if (unlikely (qh->reclaim != 0))
+	if (unlikely(ehci->rh_state < EHCI_RH_RUNNING)) {
+		/* if (unlikely (qh->unlink_next != 0))
 		 *	this will recurse, probably not much
 		 */
 		end_unlink_async (ehci);
 		return;
 	}
 
-	cmd |= CMD_IAAD;
-	ehci_writel(ehci, cmd, &ehci->regs->command);
+	ehci_writel(ehci, ehci->command | CMD_IAAD, &ehci->regs->command);
 	(void)ehci_readl(ehci, &ehci->regs->command);
 	iaa_watchdog_start(ehci);
 }
@@ -1293,7 +1294,7 @@ static void scan_async (struct ehci_hcd *ehci)
 	enum ehci_timer_action	action = TIMER_IO_WATCHDOG;
 
 	timer_action_done (ehci, TIMER_ASYNC_SHRINK);
-	stopped = (ehci->rh_state != EHCI_RH_RUNNING);
+	stopped = (ehci->rh_state < EHCI_RH_RUNNING);
 
 	ehci->qh_scan_next = ehci->async->qh_next.qh;
 	while (ehci->qh_scan_next) {
@@ -1329,7 +1330,7 @@ static void scan_async (struct ehci_hcd *ehci)
 		 */
 		if (list_empty(&qh->qtd_list)
 				&& qh->qh_state == QH_STATE_LINKED) {
-			if (!ehci->reclaim && (stopped ||
+			if (!ehci->async_unlink && (stopped ||
 					time_after_eq(jiffies, qh->unlink_time)))
 				start_unlink_async(ehci, qh);
 			else

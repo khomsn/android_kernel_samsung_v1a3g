@@ -10,6 +10,8 @@ endif
 obj-$(CONFIG_HID)		+= hid.o
 obj-$(CONFIG_UHID)		+= uhid.o
 
+obj-$(CONFIG_HID_GENERIC)	+= hid-generic.o
+
 hid-$(CONFIG_HIDRAW)		+= hidraw.o
 
 hid-logitech-y		:= hid-lg.o
@@ -26,10 +28,7 @@ ifdef CONFIG_LOGIWHEELS_FF
 	hid-logitech-y	+= hid-lg4ff.o
 endif
 
-hid-wiimote-y		:= hid-wiimote-core.o
-ifdef CONFIG_HID_WIIMOTE_EXT
-	hid-wiimote-y	+= hid-wiimote-ext.o
-endif
+hid-wiimote-y		:= hid-wiimote-core.o hid-wiimote-modules.o
 ifdef CONFIG_DEBUG_FS
 	hid-wiimote-y	+= hid-wiimote-debug.o
 endif

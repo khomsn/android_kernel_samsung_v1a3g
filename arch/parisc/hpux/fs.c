@@ -61,6 +61,7 @@ struct hpux_dirent {
 };
 
 struct getdents_callback {
+	struct dir_context ctx;
 	struct hpux_dirent __user *current_dir;
 	struct hpux_dirent __user *previous;
 	int count;
@@ -111,24 +112,23 @@ int hpux_getdents(unsigned int fd, struct hpux_dirent __user *dirent, unsigned i
 {
 	struct file * file;
 	struct hpux_dirent __user * lastdirent;
-	struct getdents_callback buf;
+	struct getdents_callback buf = {
+		.ctx.actor = filldir,
+		.current_dir = dirent,
+		.count = count
+	};
 	int error = -EBADF;
 
 	file = fget(fd);
 	if (!file)
 		goto out;
 
-	buf.current_dir = dirent;
-	buf.previous = NULL;
-	buf.count = count;
-	buf.error = 0;
-
-	error = vfs_readdir(file, filldir, &buf);
+	error = iterate_dir(file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	lastdirent = buf.previous;
 	if (lastdirent) {
-		if (put_user(file->f_pos, &lastdirent->d_off))
+		if (put_user(buf.ctx.pos, &lastdirent->d_off))
 			error = -EFAULT;
 		else
 			error = count - buf.count;

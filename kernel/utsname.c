@@ -50,7 +50,7 @@ static struct uts_namespace *clone_uts_ns(struct task_struct *tsk,
 
 	down_read(&uts_sem);
 	memcpy(&ns->name, &old_ns->name, sizeof(ns->name));
-	ns->user_ns = get_user_ns(task_cred_xxx(tsk, user)->user_ns);
+	ns->user_ns = get_user_ns(task_cred_xxx(tsk, user_ns));
 	up_read(&uts_sem);
 	return ns;
 }
@@ -94,13 +94,13 @@ static void *utsns_get(struct task_struct *task)
 	struct uts_namespace *ns = NULL;
 	struct nsproxy *nsproxy;
 
-	rcu_read_lock();
-	nsproxy = task_nsproxy(task);
+	task_lock(task);
+	nsproxy = task->nsproxy;
 	if (nsproxy) {
 		ns = nsproxy->uts_ns;
 		get_uts_ns(ns);
 	}
-	rcu_read_unlock();
+	task_unlock(task);
 
 	return ns;
 }

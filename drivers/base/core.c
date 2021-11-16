@@ -84,14 +84,13 @@ const char *dev_driver_string(const struct device *dev)
 }
 EXPORT_SYMBOL(dev_driver_string);
 
-#define to_dev(obj) container_of(obj, struct device, kobj)
 #define to_dev_attr(_attr) container_of(_attr, struct device_attribute, attr)
 
 static ssize_t dev_attr_show(struct kobject *kobj, struct attribute *attr,
 			     char *buf)
 {
 	struct device_attribute *dev_attr = to_dev_attr(attr);
-	struct device *dev = to_dev(kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	ssize_t ret = -EIO;
 
 	if (dev_attr->show)
@@ -107,7 +106,7 @@ static ssize_t dev_attr_store(struct kobject *kobj, struct attribute *attr,
 			      const char *buf, size_t count)
 {
 	struct device_attribute *dev_attr = to_dev_attr(attr);
-	struct device *dev = to_dev(kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	ssize_t ret = -EIO;
 
 	if (dev_attr->store)
@@ -181,7 +180,7 @@ EXPORT_SYMBOL_GPL(device_show_int);
  */
 static void device_release(struct kobject *kobj)
 {
-	struct device *dev = to_dev(kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct device_private *p = dev->p;
 
 	if (dev->release)
@@ -199,7 +198,7 @@ static void device_release(struct kobject *kobj)
 
 static const void *device_namespace(struct kobject *kobj)
 {
-	struct device *dev = to_dev(kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	const void *ns = NULL;
 
 	if (dev->class && dev->class->ns_type)
@@ -220,7 +219,7 @@ static int dev_uevent_filter(struct kset *kset, struct kobject *kobj)
 	struct kobj_type *ktype = get_ktype(kobj);
 
 	if (ktype == &device_ktype) {
-		struct device *dev = to_dev(kobj);
+		struct device *dev = kobj_to_dev(kobj);
 		if (dev->bus)
 			return 1;
 		if (dev->class)
@@ -231,7 +230,7 @@ static int dev_uevent_filter(struct kset *kset, struct kobject *kobj)
 
 static const char *dev_uevent_name(struct kset *kset, struct kobject *kobj)
 {
-	struct device *dev = to_dev(kobj);
+	struct device *dev = kobj_to_dev(kobj);
 
 	if (dev->bus)
 		return dev->bus->name;
@@ -243,7 +242,7 @@ static const char *dev_uevent_name(struct kset *kset, struct kobject *kobj)
 static int dev_uevent(struct kset *kset, struct kobject *kobj,
 		      struct kobj_uevent_env *env)
 {
-	struct device *dev = to_dev(kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	int retval = 0;
 
 	/* add device node properties if present */
@@ -251,15 +250,21 @@ static int dev_uevent(struct kset *kset, struct kobject *kobj,
 		const char *tmp;
 		const char *name;
 		umode_t mode = 0;
+		kuid_t uid = GLOBAL_ROOT_UID;
+		kgid_t gid = GLOBAL_ROOT_GID;
 
 		add_uevent_var(env, "MAJOR=%u", MAJOR(dev->devt));
 		add_uevent_var(env, "MINOR=%u", MINOR(dev->devt));
-		name = device_get_devnode(dev, &mode, &tmp);
+		name = device_get_devnode(dev, &mode, &uid, &gid, &tmp);
 		if (name) {
 			add_uevent_var(env, "DEVNAME=%s", name);
-			kfree(tmp);
 			if (mode)
 				add_uevent_var(env, "DEVMODE=%#o", mode & 0777);
+			if (!uid_eq(uid, GLOBAL_ROOT_UID))
+				add_uevent_var(env, "DEVUID=%u", from_kuid(&init_user_ns, uid));
+			if (!gid_eq(gid, GLOBAL_ROOT_GID))
+				add_uevent_var(env, "DEVGID=%u", from_kgid(&init_user_ns, gid));
+			kfree(tmp);
 		}
 	}
 
@@ -1133,7 +1138,7 @@ int device_register(struct device *dev)
  */
 struct device *get_device(struct device *dev)
 {
-	return dev ? to_dev(kobject_get(&dev->kobj)) : NULL;
+	return dev ? kobj_to_dev(kobject_get(&dev->kobj)) : NULL;
 }
 
 /**
@@ -1251,6 +1256,8 @@ static struct device *next_device(struct klist_iter *i)
  * device_get_devnode - path of device node file
  * @dev: device
  * @mode: returned file access mode
+ * @uid: returned file owner
+ * @gid: returned file group
  * @tmp: possibly allocated string
  *
  * Return the relative path of a possible device node.
@@ -1259,7 +1266,8 @@ static struct device *next_device(struct klist_iter *i)
  * freed by the caller.
  */
 const char *device_get_devnode(struct device *dev,
-			       umode_t *mode, const char **tmp)
+			       umode_t *mode, kuid_t *uid, kgid_t *gid,
+			       const char **tmp)
 {
 	char *s;
 
@@ -1267,7 +1275,7 @@ const char *device_get_devnode(struct device *dev,
 
 	/* the device type may provide a specific name */
 	if (dev->type && dev->type->devnode)
-		*tmp = dev->type->devnode(dev, mode);
+		*tmp = dev->type->devnode(dev, mode, uid, gid);
 	if (*tmp)
 		return *tmp;
 

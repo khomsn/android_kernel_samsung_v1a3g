@@ -29,7 +29,6 @@
 #include <linux/pm_qos.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
-#include <linux/sysfs_helpers.h>
 #include <linux/cpumask.h>
 #include <linux/fb.h>
 
@@ -81,12 +80,6 @@ static unsigned int freq_max[CA_END] __read_mostly;	/* Maximum (Big/Little) cloc
 #define LIMIT_COLD_VOLTAGE	1250000
 #define MIN_COLD_VOLTAGE	950000
 
-/*
- * Taken from asv-exynos5420.h
- */
-#define ARM_MAX_VOLT		1362500
-#define KFC_MAX_VOLT		1312500
-
 #define ARM_INT_SKEW_FREQ	1600000
 #define ARM_INT_SKEW_FREQ_H	1800000
 
@@ -110,6 +103,10 @@ DEFINE_MUTEX(cpufreq_lock);
 static DEFINE_MUTEX(cpufreq_scale_lock);
 
 static bool exynos_cpufreq_init_done;
+
+#ifdef CONFIG_SW_SELF_DISCHARGING
+static int self_discharging;
+#endif
 
 /* Include CPU mask of each cluster */
 static cluster_type boot_cluster;
@@ -922,7 +919,9 @@ static ssize_t show_freq_table(struct kobject *kobj,
 	pr_len = (size_t)((PAGE_SIZE - 2) / tbl_sz);
 
 	for (i = 0; merge_freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
-		if (merge_freq_table[i].frequency != CPUFREQ_ENTRY_INVALID)
+		if (merge_freq_table[i].frequency != CPUFREQ_ENTRY_INVALID && 
+			merge_freq_table[i].frequency <= 1900000 &&
+			merge_freq_table[i].frequency >= 250000)
 			count += snprintf(&buf[count], pr_len, "%d ",
 				merge_freq_table[i].frequency);
         }
@@ -950,6 +949,12 @@ static ssize_t store_min_freq(struct kobject *kobj, struct attribute *attr,
 
 	if (!sscanf(buf, "%d", &input))
 		return -EINVAL;
+
+#ifdef CONFIG_SW_SELF_DISCHARGING
+	if (self_discharging > 0) {
+		input = self_discharging;
+	}
+#endif
 
 	if (input > 0)
 		input = min(input, (int)freq_max[CA15]);
@@ -991,6 +996,48 @@ static ssize_t store_max_freq(struct kobject *kobj, struct attribute *attr,
 	return count;
 }
 
+#ifdef CONFIG_SW_SELF_DISCHARGING
+static ssize_t show_cpufreq_self_discharging(struct kobject *kobj,
+			     struct attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", self_discharging);
+}
+
+static ssize_t store_cpufreq_self_discharging(struct kobject *kobj, struct attribute *attr,
+			      const char *buf, size_t count)
+{
+	int input;
+	int i;
+
+	if (!sscanf(buf, "%d", &input))
+		return -EINVAL;
+
+	if (input > 0) {
+		self_discharging = input;
+//		cpu_idle_poll_ctrl(true);
+	}
+	else {
+		self_discharging = 0;
+//		cpu_idle_poll_ctrl(false);
+	}
+
+	if (input > 0)
+		input = min(input, (int)freq_max[CA15]);
+
+	if (input <= (int)freq_min[CA7]) {
+		if (pm_qos_request_active(&min_cpu_qos))
+			pm_qos_update_request(&min_cpu_qos, freq_min[CA7]);
+	} else {
+		if (pm_qos_request_active(&min_cpu_qos))
+			pm_qos_update_request(&min_cpu_qos, input);
+		else
+			pm_qos_add_request(&min_cpu_qos, PM_QOS_CPU_FREQ_MIN, input);
+	}
+
+	return count;
+}
+#endif
+
 define_one_global_ro(freq_table);
 define_one_global_rw(min_freq);
 define_one_global_rw(max_freq);
@@ -1001,6 +1048,10 @@ static struct global_attr cpufreq_min_limit =
 		__ATTR(cpufreq_min_limit, S_IRUGO | S_IWUSR, show_min_freq, store_min_freq);
 static struct global_attr cpufreq_max_limit =
 		__ATTR(cpufreq_max_limit, S_IRUGO | S_IWUSR, show_max_freq, store_max_freq);
+#ifdef CONFIG_SW_SELF_DISCHARGING
+static struct global_attr cpufreq_self_discharging =
+		__ATTR(cpufreq_self_discharging, S_IRUGO | S_IWUSR, show_cpufreq_self_discharging, store_cpufreq_self_discharging);
+#endif
 
 static struct attribute *iks_attributes[] = {
 	&freq_table.attr,
@@ -1013,97 +1064,6 @@ static struct attribute_group iks_attr_group = {
 	.attrs = iks_attributes,
 	.name = "iks-cpufreq",
 };
-
-/********************* CPUFreq core attributes ********************/
-
-ssize_t show_UV_table_prototype(struct cpufreq_policy *policy, char *buf, bool mv)
-{
-	cluster_type cur = CA15;
-	int i, len = 0;
-
-	for (i = 0; merge_freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
-		if (merge_freq_table[i].frequency != CPUFREQ_ENTRY_INVALID) {
-			cur = (merge_freq_table[i].frequency > STEP_LEVEL_CA7_MAX) ?
-				CA15 : CA7;
-
-			if (mv) {
-				len += sprintf(buf + len, "%dmhz: %d mV\n",
-					merge_freq_table[i].frequency / 1000,
-					exynos_info[cur]->volt_table[merge_index_table[i]] / 1000);
-			} else {
-				len += sprintf(buf + len, "%d %d \n", 
-					merge_freq_table[i].frequency / 1000,
-					exynos_info[cur]->volt_table[merge_index_table[i]]);
-			}
-		}
-        }
-
-	return len;
-}
-
-ssize_t store_UV_table_prototype(struct cpufreq_policy *policy, 
-				 const char *buf, size_t count, bool mv) {
-
-	int i, tokens, rest, invalid_offset;
-	ssize_t tsize = cpufreq_get_table_size(merge_freq_table, CA15);
-	cluster_type cur = CA15;
-	int t[tsize];
-
-	invalid_offset = 0;
-
-	if ((tokens = read_into((int*)&t, tsize, buf, count)) < 0)
-		return -EINVAL;
-
-	mutex_lock(&cpufreq_lock);
-
-	for (i = 0; i < tokens; i++) {
-		while (merge_freq_table[i + invalid_offset].frequency == CPUFREQ_ENTRY_INVALID)
-			++invalid_offset;
-
-		cur = (merge_freq_table[i + invalid_offset].frequency > STEP_LEVEL_CA7_MAX)
-			? CA15 : CA7;
-
-		if (mv)
-			t[i] *= 1000;
-
-		if ((rest = t[i] % 6250) != 0)
-			t[i] += 6250 - rest;
-
-		if (cur == CA15) {
-			sanitize_min_max(t[i], 600000, ARM_MAX_VOLT);
-		} else {
-			sanitize_min_max(t[i], 600000, KFC_MAX_VOLT);
-		}
-
-		exynos_info[cur]->volt_table[merge_index_table[i + invalid_offset]] = t[i];
-	}
-
-	mutex_unlock(&cpufreq_lock);
-
-	return count;
-}
-
-ssize_t show_UV_uV_table(struct cpufreq_policy *policy, char *buf)
-{
-	return show_UV_table_prototype(policy, buf, false);
-}
-
-ssize_t store_UV_uV_table(struct cpufreq_policy *policy, 
-				 const char *buf, size_t count)
-{
-	return store_UV_table_prototype(policy, buf, count, false);
-}
-
-ssize_t show_UV_mV_table(struct cpufreq_policy *policy, char *buf)
-{
-	return show_UV_table_prototype(policy, buf, true);
-}
-
-ssize_t store_UV_mV_table(struct cpufreq_policy *policy, 
-				 const char *buf, size_t count)
-{
-	return store_UV_table_prototype(policy, buf, count, true);
-}
 
 /************************** sysfs end ************************/
 
@@ -1486,6 +1446,14 @@ static int __init exynos_cpufreq_init(void)
 		pr_err("%s: failed to create cpufreq_max_limit sysfs interface\n", __func__);
 		goto err_cpufreq;
 	}
+
+#ifdef CONFIG_SW_SELF_DISCHARGING
+	ret = sysfs_create_file(power_kobj, &cpufreq_self_discharging.attr);
+	if (ret) {
+		pr_err("%s: failed to create cpufreq_self_discharging sysfs interface\n", __func__);
+		goto err_cpufreq;
+	}
+#endif
 
 #ifdef CONFIG_ARM_EXYNOS5420_BUS_DEVFREQ
 	pm_qos_add_request(&min_int_qos, PM_QOS_DEVICE_THROUGHPUT, 0);

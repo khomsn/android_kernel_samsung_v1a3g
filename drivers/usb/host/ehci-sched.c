@@ -481,7 +481,6 @@ static int tt_no_collision (
 
 static int enable_periodic (struct ehci_hcd *ehci)
 {
-	u32	cmd;
 	int	status;
 
 	if (ehci->periodic_sched++)
@@ -497,8 +496,8 @@ static int enable_periodic (struct ehci_hcd *ehci)
 		return status;
 	}
 
-	cmd = ehci_readl(ehci, &ehci->regs->command) | CMD_PSE;
-	ehci_writel(ehci, cmd, &ehci->regs->command);
+	ehci->command |= CMD_PSE;
+	ehci_writel(ehci, ehci->command, &ehci->regs->command);
 	/* posted write ... PSS happens later */
 
 #if defined(CONFIG_MDM_HSIC_PM)
@@ -517,7 +516,6 @@ static int enable_periodic (struct ehci_hcd *ehci)
 
 static int disable_periodic (struct ehci_hcd *ehci)
 {
-	u32	cmd;
 	int	status;
 
 	if (--ehci->periodic_sched)
@@ -543,8 +541,8 @@ static int disable_periodic (struct ehci_hcd *ehci)
 		return status;
 	}
 
-	cmd = ehci_readl(ehci, &ehci->regs->command) & ~CMD_PSE;
-	ehci_writel(ehci, cmd, &ehci->regs->command);
+	ehci->command &= ~CMD_PSE;
+	ehci_writel(ehci, ehci->command, &ehci->regs->command);
 	/* posted write ... */
 
 #if defined(CONFIG_MDM_HSIC_PM)
@@ -572,7 +570,7 @@ static int qh_link_periodic (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 #if !defined(CONFIG_LINK_DEVICE_HSIC) && !defined(CONFIG_QC_MODEM)
 	dev_dbg (&qh->dev->dev,
-		"link qh%d-%04x/%pK start %d [%d/%d us]\n",
+		"link qh%d-%04x/%p start %d [%d/%d us]\n",
 		period, hc32_to_cpup(ehci, &qh->hw->hw_info2)
 			& (QH_CMASK | QH_SMASK),
 		qh, qh->start, qh->usecs, qh->c_usecs);
@@ -656,7 +654,7 @@ static int qh_unlink_periodic(struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 #if !defined(CONFIG_LINK_DEVICE_HSIC) && !defined(CONFIG_QC_MODEM)
 	dev_dbg (&qh->dev->dev,
-		"unlink qh%d-%04x/%pK start %d [%d/%d us]\n",
+		"unlink qh%d-%04x/%p start %d [%d/%d us]\n",
 		qh->period,
 		hc32_to_cpup(ehci, &qh->hw->hw_info2) & (QH_CMASK | QH_SMASK),
 		qh, qh->start, qh->usecs, qh->c_usecs);
@@ -719,7 +717,7 @@ static void intr_deschedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
 		 * FIXME kill the now-dysfunctional queued urbs
 		 */
 		if (rc != 0)
-			ehci_err(ehci, "can't reschedule qh %pK, err %d\n",
+			ehci_err(ehci, "can't reschedule qh %p, err %d\n",
 					qh, rc);
 	}
 }
@@ -897,7 +895,7 @@ static int qh_schedule(struct ehci_hcd *ehci, struct ehci_qh *qh)
 	}
 #if !defined(CONFIG_LINK_DEVICE_HSIC) && !defined(CONFIG_QC_MODEM)
 	else
-		ehci_dbg (ehci, "reused qh %pK schedule\n", qh);
+		ehci_dbg (ehci, "reused qh %p schedule\n", qh);
 #endif
 
 	/* stuff into the periodic schedule */
@@ -1348,33 +1346,35 @@ sitd_slot_ok (
 	if (mask & ~0xffff)
 		return 0;
 
+	/* check bandwidth */
+	uframe %= period_uframes;
+	frame = uframe >> 3;
+
+#ifdef CONFIG_USB_EHCI_TT_NEWSCHED
+	/* The tt's fullspeed bus bandwidth must be available.
+	 * tt_available scheduling guarantees 10+% for control/bulk.
+	 */
+	uf = uframe & 7;
+	if (!tt_available(ehci, period_uframes >> 3,
+			stream->udev, frame, uf, stream->tt_usecs))
+		return 0;
+#else
+	/* tt must be idle for start(s), any gap, and csplit.
+	 * assume scheduling slop leaves 10+% for control/bulk.
+	 */
+	if (!tt_no_collision(ehci, period_uframes >> 3,
+			stream->udev, frame, mask))
+		return 0;
+#endif
+
 	/* this multi-pass logic is simple, but performance may
 	 * suffer when the schedule data isn't cached.
 	 */
-
-	/* check bandwidth */
-	uframe %= period_uframes;
 	do {
 		u32		max_used;
 
 		frame = uframe >> 3;
 		uf = uframe & 7;
-
-#ifdef CONFIG_USB_EHCI_TT_NEWSCHED
-		/* The tt's fullspeed bus bandwidth must be available.
-		 * tt_available scheduling guarantees 10+% for control/bulk.
-		 */
-		if (!tt_available (ehci, period_uframes << 3,
-				stream->udev, frame, uf, stream->tt_usecs))
-			return 0;
-#else
-		/* tt must be idle for start(s), any gap, and csplit.
-		 * assume scheduling slop leaves 10+% for control/bulk.
-		 */
-		if (!tt_no_collision (ehci, period_uframes << 3,
-				stream->udev, frame, mask))
-			return 0;
-#endif
 
 		/* check starts (OUT uses more than one) */
 		max_used = ehci->uframe_periodic_max - stream->usecs;
@@ -1439,7 +1439,7 @@ iso_stream_schedule (
 	}
 
 	if (span > mod - SCHEDULE_SLOP) {
-		ehci_dbg (ehci, "iso request %pK too long\n", urb);
+		ehci_dbg (ehci, "iso request %p too long\n", urb);
 		status = -EFBIG;
 		goto fail;
 	}
@@ -1475,7 +1475,7 @@ iso_stream_schedule (
 		else
 			start = next + excess + period;
 		if (start - now >= mod) {
-			ehci_dbg(ehci, "request %pK would overflow (%d+%d >= %d)\n",
+			ehci_dbg(ehci, "request %p would overflow (%d+%d >= %d)\n",
 					urb, start - now - period, period,
 					mod);
 			status = -EFBIG;
@@ -1520,7 +1520,7 @@ iso_stream_schedule (
 
 		/* no room in the schedule */
 		if (!done) {
-			ehci_dbg(ehci, "iso resched full %pK (now %d max %d)\n",
+			ehci_dbg(ehci, "iso resched full %p (now %d max %d)\n",
 				urb, now, now + mod);
 			status = -ENOSPC;
 			goto fail;
@@ -1530,7 +1530,7 @@ iso_stream_schedule (
 	/* Tried to schedule too far into the future? */
 	if (unlikely(start - now + span - period
 				>= mod - 2 * SCHEDULE_SLOP)) {
-		ehci_dbg(ehci, "request %pK would overflow (%d+%d >= %d)\n",
+		ehci_dbg(ehci, "request %p would overflow (%d+%d >= %d)\n",
 				urb, start - now, span - period,
 				mod - 2 * SCHEDULE_SLOP);
 		status = -EFBIG;
@@ -1846,7 +1846,7 @@ static int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
 
 #ifdef EHCI_URB_TRACE
 	ehci_dbg (ehci,
-		"%s %s urb %pK ep%d%s len %d, %d pkts %d uframes [%pK]\n",
+		"%s %s urb %p ep%d%s len %d, %d pkts %d uframes [%p]\n",
 		__func__, urb->dev->devpath, urb,
 		usb_pipeendpoint (urb->pipe),
 		usb_pipein (urb->pipe) ? "in" : "out",
@@ -2241,7 +2241,7 @@ static int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
 
 #ifdef EHCI_URB_TRACE
 	ehci_dbg (ehci,
-		"submit %pK dev%s ep%d%s-iso len %d\n",
+		"submit %p dev%s ep%d%s-iso len %d\n",
 		urb, urb->dev->devpath,
 		usb_pipeendpoint (urb->pipe),
 		usb_pipein (urb->pipe) ? "in" : "out",
@@ -2316,7 +2316,7 @@ scan_periodic (struct ehci_hcd *ehci)
 	 * Touches as few pages as possible:  cache-friendly.
 	 */
 	now_uframe = ehci->next_uframe;
-	if (ehci->rh_state == EHCI_RH_RUNNING) {
+	if (ehci->rh_state >= EHCI_RH_RUNNING) {
 		clock = ehci_read_frame_index(ehci);
 		clock_frame = (clock >> 3) & (ehci->periodic_size - 1);
 	} else  {
@@ -2351,7 +2351,7 @@ restart:
 			union ehci_shadow	temp;
 			int			live;
 
-			live = (ehci->rh_state == EHCI_RH_RUNNING);
+			live = (ehci->rh_state >= EHCI_RH_RUNNING);
 			switch (hc32_to_cpu(ehci, type)) {
 			case Q_TYPE_QH:
 				/* handle any completions */
@@ -2373,7 +2373,8 @@ restart:
 				 * in the previous frame for completions.
 				 */
 				if (q.fstn->hw_prev != EHCI_LIST_END(ehci)) {
-					dbg ("ignoring completions from FSTNs");
+					ehci_dbg(ehci,
+						"ignoring completions from FSTNs\n");
 				}
 				type = Q_NEXT_TYPE(ehci, q.fstn->hw_next);
 				q = q.fstn->fstn_next;
@@ -2456,7 +2457,7 @@ restart:
 				q = *q_p;
 				break;
 			default:
-				dbg ("corrupt type %d frame %d shadow %pK",
+				ehci_dbg(ehci, "corrupt type %d frame %d shadow %p\n",
 					type, frame, q.ptr);
 				// BUG ();
 				q.ptr = NULL;
@@ -2476,7 +2477,7 @@ restart:
 		 * We can't advance our scan without collecting the ISO
 		 * transfers that are still pending in this frame.
 		 */
-		if (incomplete && ehci->rh_state == EHCI_RH_RUNNING) {
+		if (incomplete && ehci->rh_state >= EHCI_RH_RUNNING) {
 			ehci->next_uframe = now_uframe;
 			break;
 		}
@@ -2492,7 +2493,7 @@ restart:
 		if (now_uframe == clock) {
 			unsigned	now;
 
-			if (ehci->rh_state != EHCI_RH_RUNNING
+			if (ehci->rh_state < EHCI_RH_RUNNING
 					|| ehci->periodic_sched == 0)
 				break;
 			ehci->next_uframe = now_uframe;

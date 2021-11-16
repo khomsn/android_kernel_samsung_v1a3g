@@ -22,11 +22,11 @@
 
 #define RECOVERY_DELAY		3000
 #define RECOVERY_CNT		5
-#define REDUCE_CURRENT_STEP	100
-#define MINIMUM_INPUT_CURRENT	300
+#define REDUCE_CURRENT_STEP	100 /* Fix noise rate (min = 100 , max = 700) */
+#define MINIMUM_INPUT_CURRENT	400 /* Maximum amount allowed in usb2 (usb2 output = 500 mA) */
 
-int SIOP_INPUT_LIMIT_CURRENT = 3000;
-int SIOP_CHARGING_LIMIT_CURRENT = 2500;
+int SIOP_INPUT_LIMIT_CURRENT	= 2100; /* Maximum amount allowed in Device (max = 2100 mA, if increase max => cpu very Damaged! ) */
+int SIOP_CHARGING_LIMIT_CURRENT	= 1900; /* Maximum Stable Charging allowed in Device (max = 2000mA, usually if screen off, else max = 1300mA) */
 
 struct max77803_charger_data {
 	struct max77803_dev	*max77803;
@@ -411,7 +411,6 @@ static void max77803_set_charge_current(struct max77803_charger_data *charger,
 		__func__, reg_data, cur);
 }
 
-
 static int max77803_get_charge_current(struct max77803_charger_data *charger)
 {
 	u8 reg_data;
@@ -430,7 +429,6 @@ static int max77803_get_charge_current(struct max77803_charger_data *charger)
 	pr_debug("%s: get charge current: %dmA\n", __func__, get_current);
 	return get_current;
 }
-
 
 /* in soft regulation, current recovery operation */
 static void max77803_recovery_work(struct work_struct *work)
@@ -468,7 +466,7 @@ static void max77803_recovery_work(struct work_struct *work)
 
 		if (charger->siop_level < 100 &&
 			charger->cable_type == POWER_SUPPLY_TYPE_MAINS &&
- 			charger->charging_current_max > SIOP_INPUT_LIMIT_CURRENT) {
+			charger->charging_current_max > SIOP_INPUT_LIMIT_CURRENT) {
 			pr_info("%s : LCD on status and revocer current\n", __func__);
 			max77803_set_input_current(charger,
 					SIOP_INPUT_LIMIT_CURRENT);
@@ -1168,6 +1166,7 @@ static int sec_chg_set_property(struct power_supply *psy,
  					if (current_now > SIOP_CHARGING_LIMIT_CURRENT)
  						current_now = SIOP_CHARGING_LIMIT_CURRENT;
 			}
+
 			max77803_set_charge_current(charger, current_now);
 
 		}
@@ -1463,6 +1462,7 @@ static irqreturn_t max77803_bypass_irq(int irq, void *data)
 
 	return IRQ_HANDLED;
 }
+
 bool unstable_power_detection = true;
 
 static void max77803_chgin_isr_work(struct work_struct *work)

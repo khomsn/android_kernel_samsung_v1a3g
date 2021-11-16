@@ -239,7 +239,7 @@ static int brcm_wlan_power(int onoff)
 		if(gpio_get_value(GPIO_BT_EN) == 0) {
 			bt_off = 1;
 			gpio_set_value(GPIO_BT_EN, 1);
-			pr_err("[brcm_wlan_power] Bluetooth Power On.\n");
+			pr_info("[brcm_wlan_power] Bluetooth Power On.\n");
 			msleep(50);
 		}
 		else {
@@ -266,7 +266,7 @@ static int brcm_wlan_power(int onoff)
 	if(onoff && (bt_off == 1)) {
 		msleep(100);
 		gpio_set_value(GPIO_BT_EN, 0);
-		pr_err("[brcm_wlan_power] Bluetooth Power Off.\n");
+		pr_info("[brcm_wlan_power] Bluetooth Power Off.\n");
 	}
 #endif
 

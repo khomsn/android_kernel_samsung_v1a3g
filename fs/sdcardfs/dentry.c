@@ -188,10 +188,9 @@ static void sdcardfs_canonical_path(const struct path *path,
 	sdcardfs_get_real_lower(path->dentry, actual_path);
 }
 
-/* 1 = delete, 0 = cache */
-static int sdcardfs_d_delete(const struct dentry *d)
+static int sdcardfs_d_delete(const struct dentry * dentry)
 {
-	return SDCARDFS_SB(d->d_sb)->options.nocache ? 1 : 0;
+	return dentry->d_inode && !S_ISDIR(dentry->d_inode->i_mode);
 }
 
 const struct dentry_operations sdcardfs_ci_dops = {
@@ -202,4 +201,3 @@ const struct dentry_operations sdcardfs_ci_dops = {
 	.d_compare	= sdcardfs_cmp_ci,
 	.d_canonical_path = sdcardfs_canonical_path,
 };
-

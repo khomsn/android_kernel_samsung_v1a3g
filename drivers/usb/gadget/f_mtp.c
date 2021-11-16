@@ -150,8 +150,8 @@ static struct usb_ss_ep_comp_descriptor mtp_superspeed_bulk_comp_desc = {
 	.bDescriptorType =      USB_DT_SS_ENDPOINT_COMP,
 
 	/* the following 2 values can be tweaked if necessary */
-	/* .bMaxBurst =         0, */
-	/* .bmAttributes =      0, */
+	.bMaxBurst              = 2,
+	/* .bmAttributes        = 0, */
 };
 
 static struct usb_endpoint_descriptor mtp_highspeed_in_desc = {
@@ -523,11 +523,12 @@ static ssize_t mtp_read(struct file *fp, char __user *buf,
 	struct usb_request *req;
 	int r = count, xfer;
 	int ret = 0;
+	size_t len = 0;
 
 	DBG(cdev, "mtp_read(%d)\n", count);
 
-	if (count > MTP_BULK_BUFFER_SIZE)
-		return -EINVAL;
+	if (dev == NULL || dev->ep_out == NULL)
+		return -ENODEV;
 
 	/* we will block until we're online */
 	DBG(cdev, "mtp_read: waiting for online state\n");
@@ -538,6 +539,14 @@ static ssize_t mtp_read(struct file *fp, char __user *buf,
 		goto done;
 	}
 	spin_lock_irq(&dev->lock);
+	if (dev->ep_out->desc) {
+		len = usb_ep_align_maybe(cdev->gadget, dev->ep_out, count);
+		if (len > MTP_BULK_BUFFER_SIZE) {
+			spin_unlock_irq(&dev->lock);
+			return -EINVAL;
+		}
+	}
+
 	if (dev->state == STATE_CANCELED) {
 		/* report cancelation to userspace */
 		dev->state = STATE_READY;
@@ -550,7 +559,7 @@ static ssize_t mtp_read(struct file *fp, char __user *buf,
 requeue_req:
 	/* queue a request */
 	req = dev->rx_req[0];
-	req->length = count;
+	req->length = len;
 	dev->rx_done = 0;
 	ret = usb_ep_queue(dev->ep_out, req, GFP_KERNEL);
 	if (ret < 0) {
@@ -855,6 +864,14 @@ static void receive_file_work(struct work_struct *data)
 				r = -ECANCELED;
 				if (!dev->rx_done)
 					usb_ep_dequeue(dev->ep_out, read_req);
+				break;
+			}
+			if (read_req->status) {
+				r = read_req->status;
+				break;
+			}
+			if (read_req->status) {
+				r = read_req->status;
 				break;
 			}
 			/* if xfer_file_length is 0xFFFFFFFF, then we read until
@@ -1287,11 +1304,11 @@ static int mtp_bind_config(struct usb_configuration *c, bool ptp_config)
 	dev->function.name = "mtp";
 	dev->function.strings = mtp_strings;
 	if (ptp_config) {
-		dev->function.descriptors = fs_ptp_descs;
+		dev->function.fs_descriptors = fs_ptp_descs;
 		dev->function.hs_descriptors = hs_ptp_descs;
 		dev->function.ss_descriptors = ss_ptp_descs;
 	} else {
-		dev->function.descriptors = fs_mtp_descs;
+		dev->function.fs_descriptors = fs_mtp_descs;
 		dev->function.hs_descriptors = hs_mtp_descs;
 		dev->function.ss_descriptors = ss_mtp_descs;
 	}

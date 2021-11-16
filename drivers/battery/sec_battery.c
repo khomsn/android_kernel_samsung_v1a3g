@@ -103,6 +103,8 @@ static enum power_supply_property sec_battery_props[] = {
 
 static enum power_supply_property sec_power_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
 };
 
 static enum power_supply_property sec_ps_props[] = {
@@ -738,7 +740,7 @@ static bool sec_bat_voltage_check(struct sec_battery_info *battery)
 	union power_supply_propval value;
 	int recharge_condition_vcell = battery->pdata->recharge_condition_vcell;
 
-		if ((battery->status == POWER_SUPPLY_STATUS_DISCHARGING) ||
+	if ((battery->status == POWER_SUPPLY_STATUS_DISCHARGING) ||
 		(battery->cable_type == POWER_SUPPLY_TYPE_BATTERY)) {
 		dev_dbg(battery->dev,
 			"%s: Charging Disabled\n", __func__);
@@ -1802,6 +1804,11 @@ static void sec_bat_get_battery_info(
 		POWER_SUPPLY_PROP_VOLTAGE_AVG, value);
 	battery->voltage_ocv = value.intval;
 
+	value.intval = SEC_BATTEY_CURRENT_MA;
+	psy_do_property("sec-fuelgauge", get,
+		POWER_SUPPLY_PROP_CURRENT_NOW, value);
+	battery->current_now = value.intval;
+
 	/* All current limits in charger */
 	psy_do_property("sec-charger", get,
 		POWER_SUPPLY_PROP_CURRENT_AVG, value);
@@ -2418,7 +2425,7 @@ static void sec_bat_cable_work(struct work_struct *work)
 					msecs_to_jiffies(500));
 end_of_cable_work:
 	if (battery->cable_type == POWER_SUPPLY_TYPE_BATTERY)
- 		wake_unlock(&battery->cable_wake_lock);
+		wake_unlock(&battery->cable_wake_lock);
 
 	dev_dbg(battery->dev, "%s: End\n", __func__);
 }
@@ -3040,6 +3047,7 @@ ssize_t sec_bat_store_attrs(
 			ret = count;
 		}
 		break;
+
 #if defined(CONFIG_PREVENT_SOC_JUMP)
 #if !defined(CONFIG_DISABLE_SAVE_CAPACITY_MAX)
 	case BATT_CAPACITY_MAX:
@@ -3312,7 +3320,7 @@ static int sec_bat_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		val->intval = battery->current_max;
-		break;			
+		break;
 	/* charging mode (differ from power supply) */
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		val->intval = battery->charging_mode;
@@ -3360,8 +3368,20 @@ static int sec_usb_get_property(struct power_supply *psy,
 	struct sec_battery_info *battery =
 		container_of(psy, struct sec_battery_info, psy_usb);
 
-	if (psp != POWER_SUPPLY_PROP_ONLINE)
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		/* V -> uV */
+		val->intval = battery->input_voltage * 1000000;
+		return 0;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		/* mA -> uA */
+		val->intval = battery->pdata->charging_current[battery->cable_type].input_current_limit * 1000;
+		return 0;
+	default:
 		return -EINVAL;
+	}
 
 	if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
 		(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
@@ -3394,14 +3414,14 @@ static int sec_ac_get_property(struct power_supply *psy,
 	struct sec_battery_info *battery =
 		container_of(psy, struct sec_battery_info, psy_ac);
 
-	if (psp != POWER_SUPPLY_PROP_ONLINE)
-		return -EINVAL;
 
-	if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
-		(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
+				(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
 			val->intval = 0;
 			return 0;
-	}
+		}
 
 	/* Set enable=1 only if the AC charger is connected */
 	switch (battery->cable_type) {
@@ -3420,6 +3440,18 @@ static int sec_ac_get_property(struct power_supply *psy,
 	default:
 		val->intval = 0;
 		break;
+	}
+	break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		/* V -> uV */
+		val->intval = battery->input_voltage * 1000000;
+		return 0;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		/* mA -> uA */
+		val->intval = battery->pdata->charging_current[battery->cable_type].input_current_limit * 1000;
+		return 0;
+	default:
+		return -EINVAL;
 	}
 
 	return 0;
@@ -3830,9 +3862,9 @@ static int __devinit sec_battery_probe(struct platform_device *pdev)
 
 	dev_dbg(battery->dev,
 		"%s: SEC Battery Driver Loaded\n", __func__);
-	
+
 	charger_control_init(battery);
-	
+
 	return 0;
 
 err_req_irq:

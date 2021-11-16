@@ -91,6 +91,8 @@ static int proc_parse_options(char *options, struct pid_namespace *pid)
 int proc_remount(struct super_block *sb, int *flags, char *data)
 {
 	struct pid_namespace *pid = sb->s_fs_info;
+
+	sync_filesystem(sb);
 	return !proc_parse_options(data, pid);
 }
 
@@ -156,7 +158,6 @@ static struct file_system_type proc_fs_type = {
 	.kill_sb	= proc_kill_sb,
 };
 
-#ifdef CONFIG_DEFERRED_INITCALLS
 extern void do_deferred_initcalls(void);
 
 static ssize_t deferred_initcalls_read_proc(struct file *file, char __user *buf,
@@ -186,7 +187,6 @@ static ssize_t deferred_initcalls_read_proc(struct file *file, char __user *buf,
 static const struct file_operations deferred_initcalls_fops = {
 	.read           = deferred_initcalls_read_proc,
 };
-#endif
 
 void __init proc_root_init(void)
 {
@@ -202,9 +202,7 @@ void __init proc_root_init(void)
 		return;
 	}
 
-#ifdef CONFIG_DEFERRED_INITCALLS
 	proc_create("deferred_initcalls", 0, NULL, &deferred_initcalls_fops);
-#endif
 	proc_symlink("mounts", NULL, "self/mounts");
 
 	proc_net_init();

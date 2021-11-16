@@ -285,6 +285,8 @@
 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
+int sysctl_tcp_min_tso_segs __read_mostly = 2;
+
 struct percpu_counter tcp_orphan_count;
 EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
@@ -530,7 +532,7 @@ static inline void tcp_mark_push(struct tcp_sock *tp, struct sk_buff *skb)
 	tp->pushed_seq = tp->write_seq;
 }
 
-static inline int forced_push(const struct tcp_sock *tp)
+static inline bool forced_push(const struct tcp_sock *tp)
 {
 	return after(tp->write_seq, tp->pushed_seq + (tp->max_window >> 1));
 }
@@ -669,7 +671,7 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 			 */
 			if (!skb_queue_empty(&sk->sk_receive_queue))
 				break;
-			sk_wait_data(sk, &timeo);
+			sk_wait_data(sk, &timeo, NULL);
 			if (signal_pending(current)) {
 				ret = sock_intr_errno(timeo);
 				break;
@@ -734,10 +736,24 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 	xmit_size_goal = mss_now;
 
 	if (large_allowed && sk_can_gso(sk)) {
-		xmit_size_goal = ((sk->sk_gso_max_size - 1) -
-				  inet_csk(sk)->icsk_af_ops->net_header_len -
-				  inet_csk(sk)->icsk_ext_hdr_len -
-				  tp->tcp_header_len);
+		u32 gso_size, hlen;
+
+		/* Maybe we should/could use sk->sk_prot->max_header here ? */
+		hlen = inet_csk(sk)->icsk_af_ops->net_header_len +
+		       inet_csk(sk)->icsk_ext_hdr_len +
+		       tp->tcp_header_len;
+
+		/* Goal is to send at least one packet per ms,
+		 * not one big TSO packet every 100 ms.
+		 * This preserves ACK clocking and is consistent
+		 * with tcp_tso_should_defer() heuristic.
+		 */
+		gso_size = sk->sk_pacing_rate / (2 * MSEC_PER_SEC);
+		gso_size = max_t(u32, gso_size,
+				 sysctl_tcp_min_tso_segs * mss_now);
+
+		xmit_size_goal = min_t(u32, gso_size,
+				       sk->sk_gso_max_size - 1 - hlen);
 
 		xmit_size_goal = tcp_bound_to_half_wnd(tp, xmit_size_goal);
 
@@ -1012,7 +1028,7 @@ new_segment:
 				if (err)
 					goto do_fault;
 			} else {
-				int merge = 0;
+				bool merge = false;
 				int i = skb_shinfo(skb)->nr_frags;
 				struct page *page = sk->sk_sndmsg_page;
 				int off;
@@ -1026,7 +1042,7 @@ new_segment:
 				    off != PAGE_SIZE) {
 					/* We can extend the last page
 					 * fragment. */
-					merge = 1;
+					merge = true;
 				} else if (i == MAX_SKB_FRAGS || !sg) {
 					/* Need to add new fragment and cannot
 					 * do this because interface is non-SG,
@@ -1208,7 +1224,7 @@ static int tcp_recv_urg(struct sock *sk, struct msghdr *msg, int len, int flags)
 void tcp_cleanup_rbuf(struct sock *sk, int copied)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	int time_to_ack = 0;
+	bool time_to_ack = false;
 
 	struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
 
@@ -1234,7 +1250,7 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 		      ((icsk->icsk_ack.pending & ICSK_ACK_PUSHED) &&
 		       !icsk->icsk_ack.pingpong)) &&
 		      !atomic_read(&sk->sk_rmem_alloc)))
-			time_to_ack = 1;
+			time_to_ack = true;
 	}
 
 	/* We send an ACK if we can now advertise a non-zero window
@@ -1256,7 +1272,7 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 			 * "Lots" means "at least twice" here.
 			 */
 			if (new_window && new_window >= 2 * rcv_window_now)
-				time_to_ack = 1;
+				time_to_ack = true;
 		}
 	}
 	if (time_to_ack)
@@ -1388,11 +1404,11 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 				break;
 		}
 		if (tcp_hdr(skb)->fin) {
-			sk_eat_skb(sk, skb, 0);
+			sk_eat_skb(sk, skb, false);
 			++seq;
 			break;
 		}
-		sk_eat_skb(sk, skb, 0);
+		sk_eat_skb(sk, skb, false);
 		if (!desc->count)
 			break;
 		tp->copied_seq = seq;
@@ -1431,8 +1447,8 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int target;		/* Read at least this many bytes */
 	long timeo;
 	struct task_struct *user_recv = NULL;
-	int copied_early = 0;
-	struct sk_buff *skb;
+	bool copied_early = false;
+	struct sk_buff *skb, *last;
 	u32 urg_hole = 0;
 
 	lock_sock(sk);
@@ -1492,7 +1508,9 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		/* Next get a buffer. */
 
+		last = skb_peek_tail(&sk->sk_receive_queue);
 		skb_queue_walk(&sk->sk_receive_queue, skb) {
+			last = skb;
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
@@ -1621,8 +1639,9 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			/* Do not sleep, just process backlog. */
 			release_sock(sk);
 			lock_sock(sk);
-		} else
-			sk_wait_data(sk, &timeo);
+		} else {
+			sk_wait_data(sk, &timeo, last);
+		}
 
 #ifdef CONFIG_NET_DMA
 		tcp_service_net_dma(sk, false);  /* Don't block */
@@ -1710,7 +1729,7 @@ do_prequeue:
 				dma_async_memcpy_issue_pending(tp->ucopy.dma_chan);
 
 				if ((offset + used) == skb->len)
-					copied_early = 1;
+					copied_early = true;
 
 			} else
 #endif
@@ -1744,7 +1763,7 @@ skip_copy:
 			goto found_fin_ok;
 		if (!(flags & MSG_PEEK)) {
 			sk_eat_skb(sk, skb, copied_early);
-			copied_early = 0;
+			copied_early = false;
 		}
 		continue;
 
@@ -1753,7 +1772,7 @@ skip_copy:
 		++*seq;
 		if (!(flags & MSG_PEEK)) {
 			sk_eat_skb(sk, skb, copied_early);
-			copied_early = 0;
+			copied_early = false;
 		}
 		break;
 	} while (len > 0);
@@ -2079,7 +2098,7 @@ EXPORT_SYMBOL(tcp_close);
 
 /* These states need RST on ABORT according to RFC793 */
 
-static inline int tcp_need_reset(int state)
+static inline bool tcp_need_reset(int state)
 {
 	return (1 << state) &
 	       (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT | TCPF_FIN_WAIT1 |
@@ -2135,7 +2154,6 @@ int tcp_disconnect(struct sock *sk, int flags)
 	tp->packets_out = 0;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	tp->snd_cwnd_cnt = 0;
-	tp->bytes_acked = 0;
 	tp->window_clamp = 0;
 	tcp_set_ca_state(sk, TCP_CA_Open);
 	tcp_clear_retrans(tp);
@@ -2475,11 +2493,12 @@ EXPORT_SYMBOL(compat_tcp_setsockopt);
 #endif
 
 /* Return information about state of tcp endpoint in API format. */
-void tcp_get_info(const struct sock *sk, struct tcp_info *info)
+void tcp_get_info(struct sock *sk, struct tcp_info *info)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	u32 now = tcp_time_stamp;
+	unsigned int start;
 
 	memset(info, 0, sizeof(*info));
 
@@ -2537,6 +2556,19 @@ void tcp_get_info(const struct sock *sk, struct tcp_info *info)
 	info->tcpi_rcv_space = tp->rcvq_space.space;
 
 	info->tcpi_total_retrans = tp->total_retrans;
+
+	info->tcpi_pacing_rate = sk->sk_pacing_rate != ~0U ?
+					sk->sk_pacing_rate : ~0ULL;
+	info->tcpi_max_pacing_rate = sk->sk_max_pacing_rate != ~0U ?
+					sk->sk_max_pacing_rate : ~0ULL;
+
+	do {
+		start = u64_stats_fetch_begin_irq(&tp->syncp);
+		info->tcpi_bytes_acked = tp->bytes_acked;
+		info->tcpi_bytes_received = tp->bytes_received;
+	} while (u64_stats_fetch_retry_irq(&tp->syncp, start));
+	info->tcpi_segs_out = tp->segs_out;
+	info->tcpi_segs_in = tp->segs_in;
 }
 EXPORT_SYMBOL_GPL(tcp_get_info);
 
@@ -2704,12 +2736,16 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb,
 	netdev_features_t features)
 {
 	struct sk_buff *segs = ERR_PTR(-EINVAL);
+	unsigned int sum_truesize = 0;
 	struct tcphdr *th;
 	unsigned thlen;
 	unsigned int seq;
 	__be32 delta;
 	unsigned int oldlen;
 	unsigned int mss;
+	struct sk_buff *gso_skb = skb;
+	__sum16 newcheck;
+	bool ooo_okay, copy_destructor;
 
 	if (!pskb_may_pull(skb, sizeof(*th)))
 		goto out;
@@ -2748,9 +2784,17 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb,
 		goto out;
 	}
 
+	copy_destructor = gso_skb->destructor == tcp_wfree;
+	ooo_okay = gso_skb->ooo_okay;
+	/* All segments but the first should have ooo_okay cleared */
+	skb->ooo_okay = 0;
+
 	segs = skb_segment(skb, features);
 	if (IS_ERR(segs))
 		goto out;
+
+	/* Only first segment might have ooo_okay set */
+	segs->ooo_okay = ooo_okay;
 
 	delta = htonl(oldlen + (thlen + mss));
 
@@ -2758,23 +2802,43 @@ struct sk_buff *tcp_tso_segment(struct sk_buff *skb,
 	th = tcp_hdr(skb);
 	seq = ntohl(th->seq);
 
+	newcheck = ~csum_fold((__force __wsum)((__force u32)th->check +
+					       (__force u32)delta));
+
 	do {
 		th->fin = th->psh = 0;
+		th->check = newcheck;
 
-		th->check = ~csum_fold((__force __wsum)((__force u32)th->check +
-				       (__force u32)delta));
 		if (skb->ip_summed != CHECKSUM_PARTIAL)
 			th->check =
 			     csum_fold(csum_partial(skb_transport_header(skb),
 						    thlen, skb->csum));
 
 		seq += mss;
+		if (copy_destructor) {
+			skb->destructor = gso_skb->destructor;
+			skb->sk = gso_skb->sk;
+			sum_truesize += skb->truesize;
+		}
 		skb = skb->next;
 		th = tcp_hdr(skb);
 
 		th->seq = htonl(seq);
 		th->cwr = 0;
 	} while (skb->next);
+
+	/* Following permits TCP Small Queues to work well with GSO :
+	 * The callback to TCP stack will be called at the time last frag
+	 * is freed at TX completion, and not right now when gso_skb
+	 * is freed by GSO engine
+	 */
+	if (copy_destructor) {
+		swap(gso_skb->sk, skb->sk);
+		swap(gso_skb->destructor, skb->destructor);
+		sum_truesize += skb->truesize;
+		atomic_add(sum_truesize - gso_skb->truesize,
+			   &skb->sk->sk_wmem_alloc);
+	}
 
 	delta = htonl(oldlen + (skb->tail - skb->transport_header) +
 		      skb->data_len);
@@ -2963,13 +3027,13 @@ out_free:
 struct tcp_md5sig_pool __percpu *tcp_alloc_md5sig_pool(struct sock *sk)
 {
 	struct tcp_md5sig_pool __percpu *pool;
-	int alloc = 0;
+	bool alloc = false;
 
 retry:
 	spin_lock_bh(&tcp_md5sig_pool_lock);
 	pool = tcp_md5sig_pool;
 	if (tcp_md5sig_users++ == 0) {
-		alloc = 1;
+		alloc = true;
 		spin_unlock_bh(&tcp_md5sig_pool_lock);
 	} else if (!pool) {
 		tcp_md5sig_users--;
@@ -3400,6 +3464,7 @@ void __init tcp_init(void)
 	tcp_secret_primary = &tcp_secret_one;
 	tcp_secret_retiring = &tcp_secret_two;
 	tcp_secret_secondary = &tcp_secret_two;
+	tcp_tasklet_init();
 }
 
 static int tcp_is_local(struct net *net, __be32 addr) {

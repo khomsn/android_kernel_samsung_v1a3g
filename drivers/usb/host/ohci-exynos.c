@@ -14,6 +14,7 @@
 #include <linux/clk.h>
 #include <linux/platform_device.h>
 #include <mach/ohci.h>
+#include <linux/usb/samsung_usb_phy.h>
 #include <plat/usb-phy.h>
 
 struct exynos_ohci_hcd {
@@ -28,7 +29,7 @@ static int ohci_exynos_init(struct usb_hcd *hcd)
 	struct ohci_hcd *ohci = hcd_to_ohci(hcd);
 	int ret;
 
-	ohci_dbg(ohci, "ohci_exynos_init, ohci:%pK", ohci);
+	ohci_dbg(ohci, "ohci_exynos_init, ohci:%p", ohci);
 
 	ret = ohci_init(ohci);
 	if (ret < 0)
@@ -73,7 +74,7 @@ static int ohci_exynos_start(struct usb_hcd *hcd)
 	struct ohci_hcd *ohci = hcd_to_ohci(hcd);
 	int ret;
 
-	ohci_dbg(ohci, "ohci_exynos_start, ohci:%pK", ohci);
+	ohci_dbg(ohci, "ohci_exynos_start, ohci:%p", ohci);
 
 	ret = ohci_run(ohci);
 	if (ret < 0) {
@@ -113,7 +114,7 @@ static int exynos_ohci_suspend(struct device *dev)
 	spin_unlock_irqrestore(&ohci->lock, flags);
 
 	if (pdata && pdata->phy_exit)
-		pdata->phy_exit(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_exit(pdev, USB_PHY_TYPE_HOST);
 
 	return 0;
 }
@@ -127,7 +128,7 @@ static int exynos_ohci_resume(struct device *dev)
 
 	clk_enable(exynos_ohci->clk);
 	if (pdata && pdata->phy_init)
-		pdata->phy_init(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_init(pdev, USB_PHY_TYPE_HOST);
 
 	/* Mark hardware accessible again as we are out of D3 state by now */
 	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
@@ -235,7 +236,7 @@ static ssize_t store_ohci_power(struct device *dev,
 		usb_remove_hcd(hcd);
 
 		if (pdata && pdata->phy_exit)
-			pdata->phy_exit(pdev, S5P_USB_PHY_HOST);
+			pdata->phy_exit(pdev, USB_PHY_TYPE_HOST);
 	} else if (power_on) {
 		printk(KERN_DEBUG "%s: EHCI turns on\n", __func__);
 		if (exynos_ohci->power_on) {
@@ -243,7 +244,7 @@ static ssize_t store_ohci_power(struct device *dev,
 			usb_remove_hcd(hcd);
 		} else {
 			if (pdata && pdata->phy_init)
-				pdata->phy_init(pdev, S5P_USB_PHY_HOST);
+				pdata->phy_init(pdev, USB_PHY_TYPE_HOST);
 		}
 
 		irq = platform_get_irq(pdev, 0);
@@ -349,7 +350,7 @@ static int __devinit exynos_ohci_probe(struct platform_device *pdev)
 	}
 
 	if (pdata->phy_init)
-		pdata->phy_init(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_init(pdev, USB_PHY_TYPE_HOST);
 
 	ohci = hcd_to_ohci(hcd);
 	ohci_hcd_init(ohci);
@@ -399,7 +400,7 @@ static int __devexit exynos_ohci_remove(struct platform_device *pdev)
 	struct usb_hcd *hcd = exynos_ohci->hcd;
 
 	if (pdata && pdata->phy_resume)
-		pdata->phy_resume(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_resume(pdev, USB_PHY_TYPE_HOST);
 
 #ifdef CONFIG_USB_SUSPEND
 	pm_runtime_put(hcd->self.controller);
@@ -411,7 +412,7 @@ static int __devexit exynos_ohci_remove(struct platform_device *pdev)
 	remove_ohci_sys_file(hcd_to_ohci(hcd));
 
 	if (pdata && pdata->phy_exit)
-		pdata->phy_exit(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_exit(pdev, USB_PHY_TYPE_HOST);
 
 	iounmap(hcd->regs);
 
@@ -438,7 +439,7 @@ static void exynos_ohci_shutdown(struct platform_device *pdev)
 		return;
 
 	if (pdata && pdata->phy_resume)
-		pdata->phy_resume(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_resume(pdev, USB_PHY_TYPE_HOST);
 
 	if (hcd->driver->shutdown)
 		hcd->driver->shutdown(hcd);
@@ -476,7 +477,7 @@ static int exynos_ohci_runtime_suspend(struct device *dev)
 	spin_unlock_irqrestore(&ohci->lock, flags);
 
 	if (pdata->phy_suspend)
-		pdata->phy_suspend(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_suspend(pdev, USB_PHY_TYPE_HOST);
 
 	return 0;
 }
@@ -492,7 +493,7 @@ static int exynos_ohci_runtime_resume(struct device *dev)
 		return 0;
 
 	if (pdata->phy_resume)
-		pdata->phy_resume(pdev, S5P_USB_PHY_HOST);
+		pdata->phy_resume(pdev, USB_PHY_TYPE_HOST);
 	/* Mark hardware accessible again as we are out of D3 state by now */
 	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
 

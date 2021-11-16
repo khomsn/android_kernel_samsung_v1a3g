@@ -166,10 +166,14 @@ int dwc3_gadget_resize_tx_fifos(struct dwc3 *dwc)
 	 * improve this algorithm so that we better use the internal
 	 * FIFO space
 	 */
-	for (num = 0; num < dwc->num_in_eps; num++) {
-		struct dwc3_ep	*dep = dwc->eps[(num << 1) | 1];
+	for (num = 0; num < DWC3_ENDPOINTS_NUM; num++) {
+		struct dwc3_ep	*dep = dwc->eps[num];
+		int		fifo_number = dep->number >> 1;
 		int		mult = 1;
 		int		tmp;
+
+		if (!(dep->number & 1))
+			continue;
 
 		if (!(dep->flags & DWC3_EP_ENABLED))
 			continue;
@@ -199,7 +203,8 @@ int dwc3_gadget_resize_tx_fifos(struct dwc3 *dwc)
 		dev_vdbg(dwc->dev, "%s: Fifo Addr %04x Size %d\n",
 				dep->name, last_fifo_depth, fifo_size & 0xffff);
 
-		dwc3_writel(dwc->regs, DWC3_GTXFIFOSIZ(num), fifo_size);
+		dwc3_writel(dwc->regs, DWC3_GTXFIFOSIZ(fifo_number),
+				fifo_size);
 
 		last_fifo_depth += (fifo_size & 0xffff);
 	}
@@ -429,7 +434,7 @@ static int dwc3_gadget_set_ep_config(struct dwc3 *dwc, struct dwc3_ep *dep,
 
 	params.param0 = DWC3_DEPCFG_EP_TYPE(usb_endpoint_type(desc))
 		| DWC3_DEPCFG_MAX_PACKET_SIZE(usb_endpoint_maxp(desc))
-		| DWC3_DEPCFG_BURST_SIZE(dep->endpoint.maxburst);
+		| DWC3_DEPCFG_BURST_SIZE(dep->endpoint.maxburst - 1);
 
 	params.param1 = DWC3_DEPCFG_XFER_COMPLETE_EN
 		| DWC3_DEPCFG_XFER_NOT_READY_EN;
@@ -1604,13 +1609,6 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 		 */
 		req->request.actual += req->request.length - count;
 		dwc3_gadget_giveback(dep, req, status);
-
-		/* EP possibly disabled during giveback? */
-		if (!(dep->flags & DWC3_EP_ENABLED)) {
-			dev_dbg(dwc->dev, "%s disabled while handling ep event\n",
-					dep->name);
-			return 0;
-		}
 		if (s_pkt)
 			break;
 		if ((event->status & DEPEVT_STATUS_LST) &&
@@ -2121,12 +2119,11 @@ static void dwc3_gadget_wakeup_interrupt(struct dwc3 *dwc)
 	dev_vdbg(dwc->dev, "%s\n", __func__);
 
 	/*
-	 * gadget_driver resume function might require some dwc3-gadget
-	 * operations, such as ep_enable. Hence, dwc->lock must be released.
+	 * TODO take core out of low power mode when that's
+	 * implemented.
 	 */
-	spin_unlock(&dwc->lock);
+
 	dwc->gadget_driver->resume(&dwc->gadget);
-	spin_lock(&dwc->lock);
 }
 
 static void dwc3_gadget_linksts_change_interrupt(struct dwc3 *dwc,

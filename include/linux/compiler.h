@@ -42,7 +42,27 @@ extern void __chk_io_ptr(const volatile void __iomem *);
 # define __rcu
 #endif
 
+/* Indirect macros required for expanded argument pasting, eg. __LINE__. */
+#define ___PASTE(a,b) a##b
+#define __PASTE(a,b) ___PASTE(a,b)
+
 #ifdef __KERNEL__
+
+/*
+ * Minimal backport of compiler_attributes.h to add support for __copy
+ * to v4.9.y so that we can use it in init/exit_module to avoid
+ * -Werror=missing-attributes errors on GCC 9.
+ */
+#ifndef __has_attribute
+# define __has_attribute(x) __GCC4_has_attribute_##x
+# define __GCC4_has_attribute___copy__                0
+#endif
+
+#if __has_attribute(__copy__)
+# define __copy(symbol)                 __attribute__((__copy__(symbol)))
+#else
+# define __copy(symbol)
+#endif
 
 #ifdef __GNUC__
 #include <linux/compiler-gcc.h>
@@ -92,7 +112,7 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 #define unlikely_notrace(x)	__builtin_expect(!!(x), 0)
 
 #define __branch_check__(x, expect) ({					\
-			int ______r;					\
+			long ______r;					\
 			static struct ftrace_branch_data		\
 				__attribute__((__aligned__(4)))		\
 				__attribute__((section("_ftrace_annotated_branch"))) \
@@ -125,7 +145,7 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
  */
 #define if(cond, ...) __trace_if( (cond , ## __VA_ARGS__) )
 #define __trace_if(cond) \
-	if (__builtin_constant_p((cond)) ? !!(cond) :			\
+	if (__builtin_constant_p(!!(cond)) ? !!(cond) :			\
 	({								\
 		int ______r;						\
 		static struct ftrace_branch_data			\
@@ -152,6 +172,11 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 # define barrier() __memory_barrier()
 #endif
 
+/* workaround for GCC PR82365 if needed */
+#ifndef barrier_before_unreachable
+# define barrier_before_unreachable() do { } while (0)
+#endif
+
 /* Unreachable code */
 #ifndef unreachable
 # define unreachable() do { } while (1)
@@ -164,26 +189,12 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
     (typeof(ptr)) (__ptr + (off)); })
 #endif
 
-#ifndef OPTIMIZER_HIDE_VAR
-#define OPTIMIZER_HIDE_VAR(var) barrier()
-#endif
-
 /* Not-quite-unique ID. */
 #ifndef __UNIQUE_ID
 # define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __LINE__)
 #endif
 
 #include <linux/types.h>
-
-static __always_inline void data_access_exceeds_word_size(void)
-#ifdef __compiletime_warning
-__compiletime_warning("data access exceeds word size and won't be atomic")
-#endif
-;
-
-static __always_inline void data_access_exceeds_word_size(void)
-{
-}
 
 static __always_inline void __read_once_size(const volatile void *p, void *res, int size)
 {
@@ -197,7 +208,6 @@ static __always_inline void __read_once_size(const volatile void *p, void *res, 
 	default:
 		barrier();
 		__builtin_memcpy((void *)res, (const void *)p, size);
-		data_access_exceeds_word_size();
 		barrier();
 	}
 }
@@ -214,7 +224,6 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 	default:
 		barrier();
 		__builtin_memcpy((void *)p, (const void *)res, size);
-		data_access_exceeds_word_size();
 		barrier();
 	}
 }
@@ -359,6 +368,10 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 /* Simple shorthand for a section definition */
 #ifndef __section
 # define __section(S) __attribute__ ((__section__(#S)))
+#endif
+
+#ifndef __visible
+#define __visible
 #endif
 
 /* Are two types/vars the same type (ignoring qualifiers)? */

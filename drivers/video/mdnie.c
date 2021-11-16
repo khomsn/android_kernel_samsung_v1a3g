@@ -410,6 +410,11 @@ static ssize_t mode_store(struct device *dev,
 	return count;
 }
 
+static ssize_t mode_max_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n", MODE_MAX);
+}
 
 static ssize_t scenario_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -451,6 +456,16 @@ static ssize_t scenario_store(struct device *dev,
 #endif
 
 	return count;
+}
+
+static ssize_t scenario_max_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	char *pos = buf;
+
+	pos += sprintf(pos, "%d\n", SCENARIO_MAX);
+
+	return pos - buf;
 }
 
 #if defined(CONFIG_FB_MDNIE_PWM)
@@ -725,6 +740,16 @@ static ssize_t accessibility_store(struct device *dev,
 	return count;
 }
 
+static ssize_t accessibility_max_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	char *pos = buf;
+
+	pos += sprintf(pos, "%d\n", ACCESSIBILITY_MAX);
+
+	return pos - buf;
+}
+
 #if !defined(CONFIG_FB_MDNIE_PWM)
 static ssize_t color_correct_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -827,7 +852,9 @@ static int set_outdoormode(struct notifier_block *nb,
 
 static struct device_attribute mdnie_attributes[] = {
 	__ATTR(mode, 0664, mode_show, mode_store),
+	__ATTR(mode_max, 0444, mode_max_show, NULL),
 	__ATTR(scenario, 0664, scenario_show, scenario_store),
+	__ATTR(scenario_max, 0444, scenario_max_show, NULL),
 #if defined(CONFIG_FB_MDNIE_PWM)
 	__ATTR(cabc, 0664, cabc_show, cabc_store),
 #endif
@@ -836,6 +863,7 @@ static struct device_attribute mdnie_attributes[] = {
 #endif
 	__ATTR(tuning, 0664, tuning_show, tuning_store),
 	__ATTR(accessibility, 0664, accessibility_show, accessibility_store),
+	__ATTR(accessibility_max, 0444, accessibility_max_show, NULL),
 #if !defined(CONFIG_FB_MDNIE_PWM)
 	__ATTR(color_correct, 0444, color_correct_show, NULL),
 #endif

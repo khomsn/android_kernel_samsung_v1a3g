@@ -45,11 +45,11 @@
 #include <linux/debugobjects.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
+#include <linux/freezer.h>
 
 #include <asm/uaccess.h>
 
 #include <trace/events/timer.h>
-#include <mach/sec_debug.h>
 
 /*
  * The timer bases:
@@ -325,22 +325,24 @@ EXPORT_SYMBOL_GPL(ktime_sub_ns);
 /*
  * Divide a ktime value by a nanosecond value
  */
-u64 ktime_divns(const ktime_t kt, s64 div)
+s64 __ktime_divns(const ktime_t kt, s64 div)
 {
-	u64 dclc;
 	int sft = 0;
+	s64 dclc;
+	u64 tmp;
 
 	dclc = ktime_to_ns(kt);
+	tmp = dclc < 0 ? -dclc : dclc;
 	/* Make sure the divisor is less than 2^32: */
 	while (div >> 32) {
 		sft++;
 		div >>= 1;
 	}
-	dclc >>= sft;
-	do_div(dclc, (unsigned long) div);
-
-	return dclc;
+	tmp >>= sft;
+	do_div(tmp, (unsigned long) div);
+	return dclc < 0 ? -tmp : tmp;
 }
+EXPORT_SYMBOL_GPL(__ktime_divns);
 #endif /* BITS_PER_LONG >= 64 */
 
 /*
@@ -471,6 +473,7 @@ void destroy_hrtimer_on_stack(struct hrtimer *timer)
 {
 	debug_object_free(timer, &hrtimer_debug_descr);
 }
+EXPORT_SYMBOL_GPL(destroy_hrtimer_on_stack);
 
 #else
 static inline void debug_hrtimer_init(struct hrtimer *timer) { }
@@ -663,6 +666,7 @@ static int hrtimer_reprogram(struct hrtimer *timer,
 static inline void hrtimer_init_hres(struct hrtimer_cpu_base *base)
 {
 	base->expires_next.tv64 = KTIME_MAX;
+	base->hang_detected = 0;
 	base->hres_active = 0;
 }
 
@@ -953,7 +957,7 @@ remove_hrtimer(struct hrtimer *timer, struct hrtimer_clock_base *base)
 }
 
 int __hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
-		unsigned long delta_ns, const enum hrtimer_mode mode,
+		u64 delta_ns, const enum hrtimer_mode mode,
 		int wakeup)
 {
 	struct hrtimer_clock_base *base, *new_base;
@@ -1025,7 +1029,7 @@ int __hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
  *  1 when the timer was active
  */
 int hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
-		unsigned long delta_ns, const enum hrtimer_mode mode)
+		u64 delta_ns, const enum hrtimer_mode mode)
 {
 	return __hrtimer_start_range_ns(timer, tim, delta_ns, mode, 1);
 }
@@ -1166,7 +1170,12 @@ static void __hrtimer_init(struct hrtimer *timer, clockid_t clock_id,
 
 	cpu_base = &__raw_get_cpu_var(hrtimer_bases);
 
-	if (clock_id == CLOCK_REALTIME && mode != HRTIMER_MODE_ABS)
+	/*
+	 * POSIX magic: Relative CLOCK_REALTIME timers are not affected by
+	 * clock modifications, so they needs to become CLOCK_MONOTONIC to
+	 * ensure POSIX compliance.
+	 */
+	if (clock_id == CLOCK_REALTIME && mode & HRTIMER_MODE_REL)
 		clock_id = CLOCK_MONOTONIC;
 
 	base = hrtimer_clockid_to_base(clock_id);
@@ -1228,9 +1237,7 @@ static void __run_hrtimer(struct hrtimer *timer, ktime_t *now)
 	 */
 	raw_spin_unlock(&cpu_base->lock);
 	trace_hrtimer_expire_entry(timer, now);
-	sec_debug_timer_log(1111, (void *)fn);
 	restart = fn(timer);
-	sec_debug_timer_log(2222, (void *)fn);
 	trace_hrtimer_expire_exit(timer);
 	raw_spin_lock(&cpu_base->lock);
 
@@ -1525,7 +1532,7 @@ static int __sched do_nanosleep(struct hrtimer_sleeper *t, enum hrtimer_mode mod
 			t->task = NULL;
 
 		if (likely(t->task))
-			schedule();
+			freezable_schedule();
 
 		hrtimer_cancel(&t->timer);
 		mode = HRTIMER_MODE_ABS;
@@ -1586,7 +1593,7 @@ long hrtimer_nanosleep(struct timespec *rqtp, struct timespec __user *rmtp,
 	struct restart_block *restart;
 	struct hrtimer_sleeper t;
 	int ret = 0;
-	unsigned long slack;
+	u64 slack;
 
 	slack = current->timer_slack_ns;
 	if (rt_task(current))
@@ -1648,6 +1655,7 @@ static void __cpuinit init_hrtimers_cpu(int cpu)
 		timerqueue_init_head(&cpu_base->clock_base[i].active);
 	}
 
+	cpu_base->active_bases = 0;
 	hrtimer_init_hres(cpu_base);
 }
 
@@ -1774,7 +1782,7 @@ void __init hrtimers_init(void)
  * @clock:	timer clock, CLOCK_MONOTONIC or CLOCK_REALTIME
  */
 int __sched
-schedule_hrtimeout_range_clock(ktime_t *expires, unsigned long delta,
+schedule_hrtimeout_range_clock(ktime_t *expires, u64 delta,
 			       const enum hrtimer_mode mode, int clock)
 {
 	struct hrtimer_sleeper t;
@@ -1845,7 +1853,7 @@ schedule_hrtimeout_range_clock(ktime_t *expires, unsigned long delta,
  *
  * Returns 0 when the timer has expired otherwise -EINTR
  */
-int __sched schedule_hrtimeout_range(ktime_t *expires, unsigned long delta,
+int __sched schedule_hrtimeout_range(ktime_t *expires, u64 delta,
 				     const enum hrtimer_mode mode)
 {
 	return schedule_hrtimeout_range_clock(expires, delta, mode,

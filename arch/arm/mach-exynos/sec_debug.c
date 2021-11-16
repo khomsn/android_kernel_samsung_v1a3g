@@ -517,7 +517,7 @@ inline void sec_debug_save_context(void)
 
 static void sec_debug_set_upload_magic(unsigned magic, char *str)
 {
-	pr_emerg("(%s) %x\n", __func__, magic);
+	pr_info("(%s) %x\n", __func__, magic);
 
 	*(unsigned int *)SEC_DEBUG_MAGIC_VA = magic;
 	*(unsigned int *)(SEC_DEBUG_MAGIC_VA + 0x4000) = magic;
@@ -547,7 +547,7 @@ static void sec_debug_set_upload_cause(enum sec_debug_upload_cause_t type)
 	__raw_writel(type, EXYNOS_INFORM4);
 	__raw_writel(type, EXYNOS_INFORM6);
 
-	pr_emerg("(%s) %x\n", __func__, type);
+	pr_info("(%s) %x\n", __func__, type);
 }
 
 /*

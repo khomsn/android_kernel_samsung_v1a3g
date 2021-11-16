@@ -1069,6 +1069,11 @@ static int init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(ext4_inode_cachep);
 }
 
@@ -1239,7 +1244,7 @@ enum {
 	Opt_bsd_df, Opt_minix_df, Opt_grpid, Opt_nogrpid,
 	Opt_resgid, Opt_resuid, Opt_sb, Opt_err_cont, Opt_err_panic, Opt_err_ro,
 	Opt_nouid32, Opt_debug, Opt_removed,
-	Opt_user_xattr, Opt_nouser_xattr, Opt_acl, Opt_noacl,
+	Opt_user_xattr, Opt_nouser_xattr, Opt_no_sehash_xattr, Opt_acl, Opt_noacl,
 	Opt_auto_da_alloc, Opt_noauto_da_alloc, Opt_noload,
 	Opt_commit, Opt_min_batch_time, Opt_max_batch_time,
 	Opt_journal_dev, Opt_journal_checksum, Opt_journal_async_commit,
@@ -1275,6 +1280,7 @@ static const match_table_t tokens = {
 	{Opt_removed, "orlov"},
 	{Opt_user_xattr, "user_xattr"},
 	{Opt_nouser_xattr, "nouser_xattr"},
+	{Opt_no_sehash_xattr, "no_sehash_xattr"},
 	{Opt_acl, "acl"},
 	{Opt_noacl, "noacl"},
 	{Opt_noload, "norecovery"},
@@ -1480,6 +1486,7 @@ static const struct mount_opts {
 #ifdef CONFIG_EXT4_FS_XATTR
 	{Opt_user_xattr, EXT4_MOUNT_XATTR_USER, MOPT_SET},
 	{Opt_nouser_xattr, EXT4_MOUNT_XATTR_USER, MOPT_CLEAR},
+	{Opt_no_sehash_xattr, EXT4_MOUNT_NO_SEHASH_XATTR, MOPT_SET},
 #else
 	{Opt_user_xattr, 0, MOPT_NOSUPPORT},
 	{Opt_nouser_xattr, 0, MOPT_NOSUPPORT},
@@ -4274,8 +4281,10 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 	struct buffer_head *sbh = EXT4_SB(sb)->s_sbh;
 	int error = 0;
 
-	if (!sbh || block_device_ejected(sb))
-		return error;
+	if (!sbh)
+		return -EINVAL;
+	if (block_device_ejected(sb))
+		return -ENODEV;
 
 	/*
 	 * The superblock bh should be mapped, but it might not be if the
@@ -4541,6 +4550,8 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	int i;
 #endif
 	char *orig_data = kstrdup(data, GFP_KERNEL);
+
+	sync_filesystem(sb);
 
 	/* Store the original options */
 	lock_super(sb);

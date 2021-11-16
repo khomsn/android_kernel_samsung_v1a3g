@@ -387,7 +387,7 @@ void __init atmel_tsp_init(void)
 	i2c_register_board_info(0, mxt_i2c_devs0,
 			ARRAY_SIZE(mxt_i2c_devs0));
 
-	printk(KERN_ERR "%s touch : %d\n",
+	printk(KERN_INFO "%s touch : %d\n",
 		 __func__, mxt_i2c_devs0[0].irq);
 }
 #endif
@@ -527,7 +527,7 @@ void __init synaptics_tsp_init(void)
 	i2c_register_board_info(0, synaptics_i2c_devs0,
 		 ARRAY_SIZE(synaptics_i2c_devs0));
 
-	printk(KERN_ERR "%s touch : %d\n",
+	printk(KERN_INFO "%s touch : %d\n",
 		 __func__, synaptics_i2c_devs0[0].irq);
 }
 #endif

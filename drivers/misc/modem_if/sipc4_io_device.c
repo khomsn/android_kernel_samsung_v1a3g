@@ -892,7 +892,7 @@ static void io_dev_modem_state_changed(struct io_device *iod,
 
 	if (old_state != state) {
 		mc->phone_state = state;
-		mif_err("%s state changed (%s -> %s)\n", mc->name,
+		mif_info("%s state changed (%s -> %s)\n", mc->name,
 			get_cp_state_str(old_state), get_cp_state_str(state));
 	}
 
@@ -948,7 +948,7 @@ static int misc_open(struct inode *inode, struct file *filp)
 	int ret;
 	filp->private_data = (void *)iod;
 
-	mif_err("iod = %s\n", iod->name);
+	mif_info("iod = %s\n", iod->name);
 	atomic_inc(&iod->opened);
 
 	list_for_each_entry(ld, &msd->link_dev_list, list) {
@@ -971,7 +971,7 @@ static int misc_release(struct inode *inode, struct file *filp)
 	struct modem_shared *msd = iod->msd;
 	struct link_device *ld;
 
-	mif_err("iod = %s\n", iod->name);
+	mif_info("iod = %s\n", iod->name);
 	atomic_dec(&iod->opened);
 	skb_queue_purge(&iod->sk_rx_q);
 

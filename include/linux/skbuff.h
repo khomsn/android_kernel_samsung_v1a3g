@@ -275,6 +275,12 @@ struct skb_shared_info {
 	/* Intermediate layers must ensure that destructor_arg
 	 * remains valid until skb destructor */
 	void *		destructor_arg;
+    
+ // ------------- START of KNOX_VPN ------------------//
+	uid_t uid;
+	pid_t pid;
+	u_int32_t knox_mark;
+ // ------------- END of KNOX_VPN -------------------//
 
 	/* must be last field, see pskb_expand_head() */
 	skb_frag_t	frags[MAX_SKB_FRAGS];
@@ -965,6 +971,18 @@ static inline __u32 skb_queue_len(const struct sk_buff_head *list_)
 }
 
 /**
+ *	skb_queue_len_lockless	- get queue length
+ *	@list_: list to measure
+ *
+ *	Return the length of an &sk_buff queue.
+ *	This variant can be used in lockless contexts.
+ */
+static inline __u32 skb_queue_len_lockless(const struct sk_buff_head *list_)
+{
+	return READ_ONCE(list_->qlen);
+}
+
+/**
  *	__skb_queue_head_init - initialize non-spinlock portions of sk_buff_head
  *	@list: queue to initialize
  *
@@ -1166,7 +1184,7 @@ static inline void __skb_unlink(struct sk_buff *skb, struct sk_buff_head *list)
 {
 	struct sk_buff *next, *prev;
 
-	list->qlen--;
+	WRITE_ONCE(list->qlen, list->qlen - 1);
 	next	   = skb->next;
 	prev	   = skb->prev;
 	skb->next  = skb->prev = NULL;
@@ -2156,8 +2174,7 @@ extern int	       skb_copy_datagram_iovec(const struct sk_buff *from,
 					       int size);
 extern int	       skb_copy_and_csum_datagram_iovec(struct sk_buff *skb,
 							int hlen,
-							struct iovec *iov,
-							int len);
+							struct iovec *iov, int len);
 extern int	       skb_copy_datagram_from_iovec(struct sk_buff *skb,
 						    int offset,
 						    const struct iovec *from,

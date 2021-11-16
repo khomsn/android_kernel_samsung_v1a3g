@@ -560,7 +560,7 @@ static const sec_bat_adc_table_data_t temp_table[] = {
 	{ -200,  -200 },
 	{ -300,  -300 },
 };
-#else/* N2A,N1A*/
+#else/* N2A */
 static const sec_bat_adc_table_data_t temp_table[] = {
 	{  1100,	 1140 },
 	{  1000,	 1040 },
@@ -731,7 +731,7 @@ static void sec_bat_check_batt_id(void)
 	}
 #endif
 
-	pr_err("%s: batt_type(%s), batt_id(%d), cap(0x%x), type(%s)\n",
+	pr_info("%s: batt_type(%s), batt_id(%d), cap(0x%x), type(%s)\n",
 		__func__, sec_battery_pdata.vendor, ret,
 		adonis_battery_data[0].Capacity, adonis_battery_data[0].type_str);
 }
@@ -854,11 +854,6 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.QRTable10 = 0x3700,
 	.QRTable20 = 0x0E0A,
 	.QRTable30 = 0x098C,
-#elif defined(CONFIG_N1A)
-	.QRTable00 = 0x7000,
-	.QRTable10 = 0x2F80,
-	.QRTable20 = 0x1000,
-	.QRTable30 = 0x0E00,
 #endif
 
 #if defined(CONFIG_N2A)

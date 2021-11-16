@@ -167,6 +167,13 @@ struct tcp_info {
 	__u32	tcpi_rcv_space;
 
 	__u32	tcpi_total_retrans;
+
+	__u64	tcpi_pacing_rate;
+	__u64	tcpi_max_pacing_rate;
+	__u64	tcpi_bytes_acked;    /* RFC4898 tcpEStatsAppHCThruOctetsAcked */
+	__u64	tcpi_bytes_received; /* RFC4898 tcpEStatsAppHCThruOctetsReceived */
+	__u32	tcpi_segs_out;	     /* RFC4898 tcpEStatsPerfSegsOut */
+	__u32	tcpi_segs_in;	     /* RFC4898 tcpEStatsPerfSegsIn */
 };
 
 /* for TCP_MD5SIG socket option */
@@ -313,15 +320,33 @@ struct tcp_sock {
  *	read the code and the spec side by side (and laugh ...)
  *	See RFC793 and RFC1122. The RFC writes these in capitals.
  */
+	u64	bytes_received;	/* RFC4898 tcpEStatsAppHCThruOctetsReceived
+				 * sum(delta(rcv_nxt)), or how many bytes
+				 * were acked.
+				 */
+	u32	segs_in;	/* RFC4898 tcpEStatsPerfSegsIn
+				 * total number of segments in.
+				 */
  	u32	rcv_nxt;	/* What we want to receive next 	*/
 	u32	copied_seq;	/* Head of yet unread data		*/
 	u32	rcv_wup;	/* rcv_nxt on last window update sent	*/
  	u32	snd_nxt;	/* Next sequence we send		*/
+	u32	segs_out;	/* RFC4898 tcpEStatsPerfSegsOut
+				 * The total number of segments sent.
+				 */
+	u64	bytes_acked;	/* RFC4898 tcpEStatsAppHCThruOctetsAcked
+				 * sum(delta(snd_una)), or how many bytes
+				 * were acked.
+				 */
+	struct u64_stats_sync syncp; /* protects 64bit vars (cf tcp_get_info()) */
 
  	u32	snd_una;	/* First byte we want an ack for	*/
  	u32	snd_sml;	/* Last byte of the most recently transmitted small packet */
 	u32	rcv_tstamp;	/* timestamp of last received ACK (for keepalives) */
 	u32	lsndtime;	/* timestamp of last sent data packet (for restart window) */
+
+	struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
+	unsigned long	tsq_flags;
 
 	/* Data for direct copy to user */
 	struct {
@@ -397,7 +422,6 @@ struct tcp_sock {
 	u32	sacked_out;	/* SACK'd packets			*/
 	u32	fackets_out;	/* FACK'd packets			*/
 	u32	tso_deferred;
-	u32	bytes_acked;	/* Appropriate Byte Counting - RFC3465 */
 
 	/* from STCP, retrans queue hinting */
 	struct sk_buff* lost_skb_hint;
@@ -458,6 +482,9 @@ struct tcp_sock {
 		u32		  probe_seq_start;
 		u32		  probe_seq_end;
 	} mtu_probe;
+	u32	mtu_info; /* We received an ICMP_FRAG_NEEDED / ICMPV6_PKT_TOOBIG
+			   * while socket was owned by user.
+			   */
 
 #ifdef CONFIG_TCP_MD5SIG
 /* TCP AF-Specific parts; only used by MD5 Signature support so far */
@@ -472,6 +499,17 @@ struct tcp_sock {
 	 * contains related tcp_cookie_transactions fields.
 	 */
 	struct tcp_cookie_values  *cookie_values;
+};
+
+enum tsq_flags {
+	TSQ_THROTTLED,
+	TSQ_QUEUED,
+	TCP_TSQ_DEFERRED,	   /* tcp_tasklet_func() found socket was owned */
+	TCP_WRITE_TIMER_DEFERRED,  /* tcp_write_timer() found socket was owned */
+	TCP_DELACK_TIMER_DEFERRED, /* tcp_delack_timer() found socket was owned */
+	TCP_MTU_REDUCED_DEFERRED,  /* tcp_v{4|6}_err() could not call
+				    * tcp_v{4|6}_mtu_reduced()
+				    */
 };
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)

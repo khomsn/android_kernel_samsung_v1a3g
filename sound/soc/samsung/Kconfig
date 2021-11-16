@@ -147,7 +147,6 @@ config SND_SAMSUNG_ALP
 config SND_SAMSUNG_USE_IDMA_DRAM
 	bool "IDMA use dram"
 	depends on SND_SAMSUNG_USE_IDMA && SND_SAMSUNG_UHQA
-	depends on SEC_PM
 	default y
 	help
 	  Say Y if you want to use dram area on internal dma

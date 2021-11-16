@@ -159,9 +159,6 @@ __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 	int page_idx;
 	int ret = 0;
 	loff_t isize = i_size_read(inode);
-#ifdef CONFIG_SCFS_LOWER_PAGECACHE_INVALIDATION
-	//struct scfs_sb_info *sbi;
-#endif
 
 	if (isize == 0)
 		goto out;
@@ -186,15 +183,6 @@ __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 		page = page_cache_alloc_readahead(mapping);
 		if (!page)
 			break;
-
-#ifdef CONFIG_SCFS_LOWER_PAGECACHE_INVALIDATION
-		/*
-		   if (filp->f_flags & O_SCFSLOWER) {
-		   sbi = ;
-		   sbi->scfs_lowerpage_alloc_count++;
-		   }
-		 */
-#endif
 
 		page->index = page_offset;
 		list_add(&page->lru, &page_pool);
@@ -362,7 +350,7 @@ static pgoff_t count_history_pages(struct address_space *mapping,
 	pgoff_t head;
 
 	rcu_read_lock();
-	head = radix_tree_prev_hole(&mapping->page_tree, offset - 1, max);
+	head = page_cache_prev_hole(mapping, offset - 1, max);
 	rcu_read_unlock();
 
 	return offset - 1 - head;
@@ -441,7 +429,7 @@ ondemand_readahead(struct address_space *mapping,
 		pgoff_t start;
 
 		rcu_read_lock();
-		start = radix_tree_next_hole(&mapping->page_tree, offset+1,max);
+		start = page_cache_next_hole(mapping, offset + 1, max);
 		rcu_read_unlock();
 
 		if (!start || start - offset > max)

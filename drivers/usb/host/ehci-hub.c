@@ -107,7 +107,7 @@ static void ehci_handover_companion_ports(struct ehci_hcd *ehci)
 	ehci->owned_ports = 0;
 }
 
-static int __maybe_unused ehci_port_change(struct ehci_hcd *ehci)
+static int ehci_port_change(struct ehci_hcd *ehci)
 {
 	int i = HCS_N_PORTS(ehci->hcs_params);
 
@@ -128,7 +128,7 @@ static int __maybe_unused ehci_port_change(struct ehci_hcd *ehci)
 	return 0;
 }
 
-static __maybe_unused void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
+static void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 		bool suspending, bool do_wakeup)
 {
 	int		port;
@@ -231,9 +231,7 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	}
 
 	/* stop schedules, clean any completed work */
-	if (ehci->rh_state == EHCI_RH_RUNNING)
-		ehci_quiesce (ehci);
-	ehci->command = ehci_readl(ehci, &ehci->regs->command);
+	ehci_quiesce(ehci);
 	ehci_work(ehci);
 
 	/* Unlike other USB host controller types, EHCI doesn't have
@@ -308,7 +306,7 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	ehci_halt (ehci);
 	ehci->rh_state = EHCI_RH_SUSPENDED;
 
-	if (ehci->reclaim)
+	if (ehci->async_unlink)
 		end_unlink_async(ehci);
 
 	/* allow remote wakeup */
@@ -374,6 +372,7 @@ static int ehci_bus_resume (struct usb_hcd *hcd)
 	ehci_writel(ehci, (u32) ehci->async->qh_dma, &ehci->regs->async_next);
 
 	/* restore CMD_RUN, framelist size, and irq threshold */
+	ehci->command |= CMD_RUN;
 	ehci_writel(ehci, ehci->command, &ehci->regs->command);
 	ehci->rh_state = EHCI_RH_RUNNING;
 

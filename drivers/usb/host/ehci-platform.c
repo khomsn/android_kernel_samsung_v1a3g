@@ -30,6 +30,7 @@ static int ehci_platform_reset(struct usb_hcd *hcd)
 
 	hcd->has_tt = pdata->has_tt;
 	ehci->has_synopsys_hc_bug = pdata->has_synopsys_hc_bug;
+	ehci->pool_64_bit_align = pdata->pool_64_bit_align;
 	ehci->big_endian_desc = pdata->big_endian_desc;
 	ehci->big_endian_mmio = pdata->big_endian_mmio;
 
@@ -92,12 +93,12 @@ static int __devinit ehci_platform_probe(struct platform_device *dev)
 
 	irq = platform_get_irq(dev, 0);
 	if (irq < 0) {
-		pr_err("no irq provieded");
+		pr_err("no irq provided");
 		return irq;
 	}
 	res_mem = platform_get_resource(dev, IORESOURCE_MEM, 0);
 	if (!res_mem) {
-		pr_err("no memory recourse provieded");
+		pr_err("no memory recourse provided");
 		return -ENXIO;
 	}
 
@@ -153,17 +154,16 @@ static int __devexit ehci_platform_remove(struct platform_device *dev)
 static int ehci_platform_suspend(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
-	bool wakeup = device_may_wakeup(dev);
+	bool do_wakeup = device_may_wakeup(dev);
 
-	ehci_prepare_ports_for_controller_suspend(hcd_to_ehci(hcd), wakeup);
-	return 0;
+	return ehci_suspend(hcd, do_wakeup);
 }
 
 static int ehci_platform_resume(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 
-	ehci_prepare_ports_for_controller_resume(hcd_to_ehci(hcd));
+	ehci_resume(hcd, false);
 	return 0;
 }
 

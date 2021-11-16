@@ -61,10 +61,10 @@
 #define DEF_FREQUENCY_HIGH_ZONE			(1200000)
 #define DEF_FREQUENCY_CONSERVATIVE_STEP		(100000)
 #define MICRO_FREQUENCY_UP_THRESHOLD_H		(90)
-#define MICRO_FREQUENCY_UP_THRESHOLD_L		(85)
+#define MICRO_FREQUENCY_UP_THRESHOLD_L		(60)
 #define MICRO_FREQUENCY_UP_STEP_LEVEL_B		(1200000)
 #define MICRO_FREQUENCY_UP_STEP_LEVEL_L		L_MAX_FREQ
-#define MICRO_FREQUENCY_DOWN_STEP_LEVEL		(200000)
+#define MICRO_FREQUENCY_DOWN_STEP_LEVEL		(250000)
 #define MICRO_FREQUENCY_DOWN_DIFFER_L		(20)
 #define MIN_FREQUENCY_UP_STEP_LEVEL		(500000)
 #define MAX_FREQUENCY_UP_STEP_LEVEL		B_MAX_FREQ
@@ -738,12 +738,8 @@ static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
 
 static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 {
-	/* Extrapolated load of this CPU */
-	unsigned int load_at_max_freq = 0;
 	unsigned int max_load_freq;
 	unsigned int tmp;
-	/* Current load across this CPU */
-	unsigned int cur_load = 0;
 
 	struct cpufreq_policy *policy;
 	unsigned int j;
@@ -771,7 +767,7 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		struct cpu_dbs_info_s *j_dbs_info;
 		cputime64_t cur_wall_time, cur_idle_time, cur_iowait_time;
 		unsigned int idle_time, wall_time, iowait_time;
-		unsigned int load_freq;
+		unsigned int load, load_freq;
 		int freq_avg;
 
 		j_dbs_info = &per_cpu(od_cpu_dbs_info, j);
@@ -821,22 +817,18 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		if (unlikely(!wall_time || wall_time < idle_time))
 			continue;
 
-		cur_load = 100 * (wall_time - idle_time) / wall_time;
-		cpu_util[j] = cur_load;
-		cpu_util_sum += cur_load;
+		load = 100 * (wall_time - idle_time) / wall_time;
+		cpu_util[j] = load;
+		cpu_util_sum += load;
 
 		freq_avg = __cpufreq_driver_getavg(policy, j);
 		if (freq_avg <= 0)
 			freq_avg = policy->cur;
 
-		load_freq = cur_load * freq_avg;
+		load_freq = load * freq_avg;
 		if (load_freq > max_load_freq)
 			max_load_freq = load_freq;
 	}
-	/* calculate the scaled load across CPU */
-	load_at_max_freq = (cur_load * policy->cur)/policy->cpuinfo.max_freq;
-
-	cpufreq_notify_utilization(policy, load_at_max_freq);
 
 	if (policy->cur < dbs_tuners_ins.up_step_level_l) {
 		/*
@@ -910,12 +902,12 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 			if (!dbs_tuners_ins.powersave_bias) {
 				__cpufreq_driver_target(policy, freq_next,
-						CPUFREQ_RELATION_C);
+						CPUFREQ_RELATION_L);
 			} else {
 				int freq = powersave_bias_target(policy, freq_next,
 						CPUFREQ_RELATION_L);
 				__cpufreq_driver_target(policy, freq,
-					CPUFREQ_RELATION_C);
+					CPUFREQ_RELATION_L);
 			}
 		}
 	} else {
@@ -939,12 +931,12 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 			if (!dbs_tuners_ins.powersave_bias) {
 				__cpufreq_driver_target(policy, freq_next,
-						CPUFREQ_RELATION_C);
+						CPUFREQ_RELATION_L);
 			} else {
 				int freq = powersave_bias_target(policy, freq_next,
 						CPUFREQ_RELATION_L);
 				__cpufreq_driver_target(policy, freq,
-					CPUFREQ_RELATION_C);
+					CPUFREQ_RELATION_L);
 			}
 		}
 	}

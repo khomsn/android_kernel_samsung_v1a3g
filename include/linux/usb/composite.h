@@ -112,7 +112,7 @@ struct usb_configuration;
 struct usb_function {
 	const char			*name;
 	struct usb_gadget_strings	**strings;
-	struct usb_descriptor_header	**descriptors;
+	struct usb_descriptor_header	**fs_descriptors;
 	struct usb_descriptor_header	**hs_descriptors;
 	struct usb_descriptor_header	**ss_descriptors;
 
@@ -155,6 +155,7 @@ struct usb_function {
 	/* internals */
 	struct list_head		list;
 	DECLARE_BITMAP(endpoints, 32);
+	const struct usb_function_instance *fi;
 };
 
 int usb_add_function(struct usb_configuration *, struct usb_function *);
@@ -259,14 +260,20 @@ int usb_remove_config(struct usb_composite_dev *,
  * @iManufacturer: Used as iManufacturer override if @dev->iManufacturer is
  *	not set. If NULL a default "<system> <release> with <udc>" value
  *	will be used.
+ * @iSerialNumber: Used as iSerialNumber override if @dev->iSerialNumber is
+ *	not set.
  * @dev: Template descriptor for the device, including default device
  *	identifiers.
- * @strings: tables of strings, keyed by identifiers assigned during bind()
+ * @strings: tables of strings, keyed by identifiers assigned during @bind
  *	and language IDs provided in control requests
  * @max_speed: Highest speed the driver supports.
  * @needs_serial: set to 1 if the gadget needs userspace to provide
  * 	a serial number.  If one is not provided, warning will be printed.
- * @unbind: Reverses bind; called as a side effect of unregistering
+ * @bind: (REQUIRED) Used to allocate resources that are shared across the
+ *	whole device, such as string IDs, and add its configurations using
+ *	@usb_add_config(). This may fail by returning a negative errno
+ *	value; it should return zero on successful initialization.
+ * @unbind: Reverses @bind; called as a side effect of unregistering
  *	this driver.
  * @disconnect: optional driver disconnect method
  * @suspend: Notifies when the host stops sending USB traffic,
@@ -275,9 +282,9 @@ int usb_remove_config(struct usb_composite_dev *,
  *	before function notifications
  *
  * Devices default to reporting self powered operation.  Devices which rely
- * on bus powered operation should report this in their @bind() method.
+ * on bus powered operation should report this in their @bind method.
  *
- * Before returning from bind, various fields in the template descriptor
+ * Before returning from @bind, various fields in the template descriptor
  * may be overridden.  These include the idVendor/idProduct/bcdDevice values
  * normally to bind the appropriate host side driver, and the three strings
  * (iManufacturer, iProduct, iSerialNumber) normally used to provide user
@@ -289,11 +296,13 @@ struct usb_composite_driver {
 	const char				*name;
 	const char				*iProduct;
 	const char				*iManufacturer;
+	const char				*iSerialNumber;
 	const struct usb_device_descriptor	*dev;
 	struct usb_gadget_strings		**strings;
 	enum usb_device_speed			max_speed;
 	unsigned		needs_serial:1;
 
+	int			(*bind)(struct usb_composite_dev *cdev);
 	int			(*unbind)(struct usb_composite_dev *);
 
 	void			(*disconnect)(struct usb_composite_dev *);

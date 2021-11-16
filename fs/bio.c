@@ -71,7 +71,7 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 {
 	unsigned int sz = sizeof(struct bio) + extra_size;
 	struct kmem_cache *slab = NULL;
-	struct bio_slab *bslab;
+	struct bio_slab *bslab, *new_bio_slabs;
 	unsigned int i, entry = -1;
 
 	mutex_lock(&bio_slab_lock);
@@ -95,11 +95,12 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 
 	if (bio_slab_nr == bio_slab_max && entry == -1) {
 		bio_slab_max <<= 1;
-		bio_slabs = krealloc(bio_slabs,
-				     bio_slab_max * sizeof(struct bio_slab),
-				     GFP_KERNEL);
-		if (!bio_slabs)
+		new_bio_slabs = krealloc(bio_slabs,
+					 bio_slab_max * sizeof(struct bio_slab),
+					 GFP_KERNEL);
+		if (!new_bio_slabs)
 			goto out_unlock;
+		bio_slabs = new_bio_slabs;
 	}
 	if (entry == -1)
 		entry = bio_slab_nr++;
@@ -776,6 +777,42 @@ static int __bio_copy_iov(struct bio *bio, struct bio_vec *iovecs,
 
 	return ret;
 }
+
+struct submit_bio_ret {
+	struct completion event;
+	int error;
+};
+
+static void submit_bio_wait_endio(struct bio *bio, int error)
+{
+	struct submit_bio_ret *ret = bio->bi_private;
+
+	ret->error = error;
+	complete(&ret->event);
+}
+
+/**
+ * submit_bio_wait - submit a bio, and wait until it completes
+ * @rw: whether to %READ or %WRITE, or maybe to %READA (read ahead)
+ * @bio: The &struct bio which describes the I/O
+ *
+ * Simple wrapper around submit_bio(). Returns 0 on success, or the error from
+ * bio_endio() on failure.
+ */
+int submit_bio_wait(int rw, struct bio *bio)
+{
+	struct submit_bio_ret ret;
+
+	rw |= REQ_SYNC;
+	init_completion(&ret.event);
+	bio->bi_private = &ret;
+	bio->bi_end_io = submit_bio_wait_endio;
+	submit_bio(rw, bio);
+	wait_for_completion(&ret.event);
+
+	return ret.error;
+}
+EXPORT_SYMBOL(submit_bio_wait);
 
 /**
  *	bio_uncopy_user	-	finish previously mapped bio

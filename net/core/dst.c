@@ -94,7 +94,7 @@ loop:
 			 * But we do not have state "obsoleted, but
 			 * referenced by parent", so it is right.
 			 */
-			if (dst->obsolete > 1)
+			if (dst->obsolete > 0)
 				continue;
 
 			___dst_free(dst);
@@ -152,7 +152,7 @@ EXPORT_SYMBOL(dst_discard);
 const u32 dst_default_metrics[RTAX_MAX];
 
 void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
-		int initial_ref, int initial_obsolete, int flags)
+		int initial_ref, int initial_obsolete, unsigned short flags)
 {
 	struct dst_entry *dst;
 
@@ -188,6 +188,7 @@ void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
 	dst->__use = 0;
 	dst->lastuse = jiffies;
 	dst->flags = flags;
+	dst->pending_confirm = 0;
 	dst->next = NULL;
 	if (!(flags & DST_NOCOUNT))
 		dst_entries_add(ops, 1);
@@ -202,7 +203,7 @@ static void ___dst_free(struct dst_entry *dst)
 	 */
 	if (dst->dev == NULL || !(dst->dev->flags&IFF_UP))
 		dst->input = dst->output = dst_discard;
-	dst->obsolete = 2;
+	dst->obsolete = DST_OBSOLETE_DEAD;
 }
 
 void __dst_free(struct dst_entry *dst)
@@ -265,20 +266,25 @@ again:
 }
 EXPORT_SYMBOL(dst_destroy);
 
+static void dst_destroy_rcu(struct rcu_head *head)
+{
+        struct dst_entry *dst = container_of(head, struct dst_entry, rcu_head);
+
+        dst = dst_destroy(dst);
+        if (dst)
+                __dst_free(dst);
+}
+
 void dst_release(struct dst_entry *dst)
 {
 	if (dst) {
-		int newrefcnt;
-		unsigned short nocache = dst->flags & DST_NOCACHE;
+    	int newrefcnt;
 
-		newrefcnt = atomic_dec_return(&dst->__refcnt);
-		WARN_ON(newrefcnt < 0);
-		if (!newrefcnt && unlikely(nocache)) {
-			dst = dst_destroy(dst);
-			if (dst)
-				__dst_free(dst);
-		}
-	}
+        newrefcnt = atomic_dec_return(&dst->__refcnt);
+        WARN_ON(newrefcnt < 0);
+        if (unlikely(dst->flags & DST_NOCACHE) && !newrefcnt)
+        	call_rcu(&dst->rcu_head, dst_destroy_rcu);
+        }
 }
 EXPORT_SYMBOL(dst_release);
 

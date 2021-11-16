@@ -36,10 +36,15 @@
 #include <linux/personality.h>
 #include <linux/ptrace.h>
 #include <linux/fs_struct.h>
+#include <linux/file.h>
+#include <linux/mount.h>
 #include <linux/gfp.h>
 #include <linux/syscore_ops.h>
 #include <linux/version.h>
 #include <linux/ctype.h>
+#include <linux/mm.h>
+#include <linux/mempolicy.h>
+#include <linux/sched.h>
 
 #include <linux/compat.h>
 #include <linux/syscalls.h>
@@ -96,10 +101,8 @@
 int overflowuid = DEFAULT_OVERFLOWUID;
 int overflowgid = DEFAULT_OVERFLOWGID;
 
-#ifdef CONFIG_UID16
 EXPORT_SYMBOL(overflowuid);
 EXPORT_SYMBOL(overflowgid);
-#endif
 
 /*
  * the same as above, but for filesystems which can only store a 16-bit
@@ -184,11 +187,11 @@ static bool set_one_prio_perm(struct task_struct *p)
 {
 	const struct cred *cred = current_cred(), *pcred = __task_cred(p);
 
-	if (pcred->user->user_ns == cred->user->user_ns &&
+	if (pcred->user_ns == cred->user_ns &&
 	    (pcred->uid  == cred->euid ||
 	     pcred->euid == cred->euid))
 		return true;
-	if (ns_capable(pcred->user->user_ns, CAP_SYS_NICE))
+	if (ns_capable(pcred->user_ns, CAP_SYS_NICE))
 		return true;
 	return false;
 }
@@ -1626,7 +1629,7 @@ static int check_prlimit_permission(struct task_struct *task)
 		return 0;
 
 	tcred = __task_cred(task);
-	if (cred->user->user_ns == tcred->user->user_ns &&
+	if (cred->user_ns == tcred->user_ns &&
 	    (cred->uid == tcred->euid &&
 	     cred->uid == tcred->suid &&
 	     cred->uid == tcred->uid  &&
@@ -1634,7 +1637,7 @@ static int check_prlimit_permission(struct task_struct *task)
 	     cred->gid == tcred->sgid &&
 	     cred->gid == tcred->gid))
 		return 0;
-	if (ns_capable(tcred->user->user_ns, CAP_SYS_RESOURCE))
+	if (ns_capable(tcred->user_ns, CAP_SYS_RESOURCE))
 		return 0;
 
 	return -EPERM;
@@ -1830,77 +1833,105 @@ SYSCALL_DEFINE1(umask, int, mask)
 }
 
 #ifdef CONFIG_CHECKPOINT_RESTORE
+static int prctl_set_mm_exe_file(struct mm_struct *mm, unsigned int fd)
+{
+	struct file *exe_file;
+	struct dentry *dentry;
+	int err, fput_needed;
+
+	exe_file = fget_light(fd, &fput_needed);
+	if (!exe_file)
+		return -EBADF;
+
+	dentry = exe_file->f_path.dentry;
+
+	/*
+	 * Because the original mm->exe_file points to executable file, make
+	 * sure that this one is executable as well, to avoid breaking an
+	 * overall picture.
+	 */
+	err = -EACCES;
+	if (!S_ISREG(dentry->d_inode->i_mode)	||
+	    exe_file->f_path.mnt->mnt_flags & MNT_NOEXEC)
+		goto exit;
+
+	err = inode_permission(dentry->d_inode, MAY_EXEC);
+	if (err)
+		goto exit;
+
+	down_write(&mm->mmap_sem);
+
+	/*
+	 * Forbid mm->exe_file change if old file still mapped.
+	 */
+	err = -EBUSY;
+	if (mm->exe_file) {
+		struct vm_area_struct *vma;
+
+		for (vma = mm->mmap; vma; vma = vma->vm_next)
+			if (vma->vm_file &&
+			    path_equal(&vma->vm_file->f_path,
+				       &mm->exe_file->f_path))
+				goto exit_unlock;
+	}
+
+	/*
+	 * The symlink can be changed only once, just to disallow arbitrary
+	 * transitions malicious software might bring in. This means one
+	 * could make a snapshot over all processes running and monitor
+	 * /proc/pid/exe changes to notice unusual activity if needed.
+	 */
+	err = -EPERM;
+	if (test_and_set_bit(MMF_EXE_FILE_CHANGED, &mm->flags))
+		goto exit_unlock;
+
+	err = 0;
+	set_mm_exe_file(mm, exe_file);	/* this grabs a reference to exe_file */
+exit_unlock:
+	up_write(&mm->mmap_sem);
+
+exit:
+	fput_light(exe_file, fput_needed);
+	return err;
+}
+
 static int prctl_set_mm(int opt, unsigned long addr,
 			unsigned long arg4, unsigned long arg5)
 {
 	unsigned long rlim = rlimit(RLIMIT_DATA);
-	unsigned long vm_req_flags;
-	unsigned long vm_bad_flags;
-	struct vm_area_struct *vma;
-	int error = 0;
 	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	int error;
 
-	if (arg4 | arg5)
+	if (arg5 || (arg4 && opt != PR_SET_MM_AUXV))
 		return -EINVAL;
 
 	if (!capable(CAP_SYS_RESOURCE))
 		return -EPERM;
 
-	if (addr >= TASK_SIZE)
+	if (opt == PR_SET_MM_EXE_FILE)
+		return prctl_set_mm_exe_file(mm, (unsigned int)addr);
+
+	if (addr >= TASK_SIZE || addr < mmap_min_addr)
 		return -EINVAL;
+
+	error = -EINVAL;
 
 	down_read(&mm->mmap_sem);
 	vma = find_vma(mm, addr);
 
-	if (opt != PR_SET_MM_START_BRK && opt != PR_SET_MM_BRK) {
-		/* It must be existing VMA */
-		if (!vma || vma->vm_start > addr)
-			goto out;
-	}
-
-	error = -EINVAL;
 	switch (opt) {
 	case PR_SET_MM_START_CODE:
+		mm->start_code = addr;
+		break;
 	case PR_SET_MM_END_CODE:
-		vm_req_flags = VM_READ | VM_EXEC;
-		vm_bad_flags = VM_WRITE | VM_MAYSHARE;
-
-		if ((vma->vm_flags & vm_req_flags) != vm_req_flags ||
-		    (vma->vm_flags & vm_bad_flags))
-			goto out;
-
-		if (opt == PR_SET_MM_START_CODE)
-			mm->start_code = addr;
-		else
-			mm->end_code = addr;
+		mm->end_code = addr;
 		break;
-
 	case PR_SET_MM_START_DATA:
-	case PR_SET_MM_END_DATA:
-		vm_req_flags = VM_READ | VM_WRITE;
-		vm_bad_flags = VM_EXEC | VM_MAYSHARE;
-
-		if ((vma->vm_flags & vm_req_flags) != vm_req_flags ||
-		    (vma->vm_flags & vm_bad_flags))
-			goto out;
-
-		if (opt == PR_SET_MM_START_DATA)
-			mm->start_data = addr;
-		else
-			mm->end_data = addr;
+		mm->start_data = addr;
 		break;
-
-	case PR_SET_MM_START_STACK:
-
-#ifdef CONFIG_STACK_GROWSUP
-		vm_req_flags = VM_READ | VM_WRITE | VM_GROWSUP;
-#else
-		vm_req_flags = VM_READ | VM_WRITE | VM_GROWSDOWN;
-#endif
-		if ((vma->vm_flags & vm_req_flags) != vm_req_flags)
-			goto out;
-
-		mm->start_stack = addr;
+	case PR_SET_MM_END_DATA:
+		mm->end_data = addr;
 		break;
 
 	case PR_SET_MM_START_BRK:
@@ -1927,30 +1958,236 @@ static int prctl_set_mm(int opt, unsigned long addr,
 		mm->brk = addr;
 		break;
 
+	/*
+	 * If command line arguments and environment
+	 * are placed somewhere else on stack, we can
+	 * set them up here, ARG_START/END to setup
+	 * command line argumets and ENV_START/END
+	 * for environment.
+	 */
+	case PR_SET_MM_START_STACK:
+	case PR_SET_MM_ARG_START:
+	case PR_SET_MM_ARG_END:
+	case PR_SET_MM_ENV_START:
+	case PR_SET_MM_ENV_END:
+		if (!vma) {
+			error = -EFAULT;
+			goto out;
+		}
+		if (opt == PR_SET_MM_START_STACK)
+			mm->start_stack = addr;
+		else if (opt == PR_SET_MM_ARG_START)
+			mm->arg_start = addr;
+		else if (opt == PR_SET_MM_ARG_END)
+			mm->arg_end = addr;
+		else if (opt == PR_SET_MM_ENV_START)
+			mm->env_start = addr;
+		else if (opt == PR_SET_MM_ENV_END)
+			mm->env_end = addr;
+		break;
+
+	/*
+	 * This doesn't move auxiliary vector itself
+	 * since it's pinned to mm_struct, but allow
+	 * to fill vector with new values. It's up
+	 * to a caller to provide sane values here
+	 * otherwise user space tools which use this
+	 * vector might be unhappy.
+	 */
+	case PR_SET_MM_AUXV: {
+		unsigned long user_auxv[AT_VECTOR_SIZE];
+
+		if (arg4 > sizeof(user_auxv))
+			goto out;
+		up_read(&mm->mmap_sem);
+
+		if (copy_from_user(user_auxv, (const void __user *)addr, arg4))
+			return -EFAULT;
+
+		/* Make sure the last entry is always AT_NULL */
+		user_auxv[AT_VECTOR_SIZE - 2] = 0;
+		user_auxv[AT_VECTOR_SIZE - 1] = 0;
+
+		BUILD_BUG_ON(sizeof(user_auxv) != sizeof(mm->saved_auxv));
+
+		task_lock(current);
+		memcpy(mm->saved_auxv, user_auxv, arg4);
+		task_unlock(current);
+
+		return 0;
+	}
 	default:
-		error = -EINVAL;
 		goto out;
 	}
 
 	error = 0;
-
 out:
 	up_read(&mm->mmap_sem);
-
 	return error;
 }
+
+static int prctl_get_tid_address(struct task_struct *me, int __user **tid_addr)
+{
+	return put_user(me->clear_child_tid, tid_addr);
+}
+
 #else /* CONFIG_CHECKPOINT_RESTORE */
 static int prctl_set_mm(int opt, unsigned long addr,
 			unsigned long arg4, unsigned long arg5)
 {
 	return -EINVAL;
 }
+static int prctl_get_tid_address(struct task_struct *me, int __user **tid_addr)
+{
+	return -EINVAL;
+}
 #endif
+
+
+static int prctl_update_vma_anon_name(struct vm_area_struct *vma,
+		struct vm_area_struct **prev,
+		unsigned long start, unsigned long end,
+		const char __user *name_addr)
+{
+	struct mm_struct * mm = vma->vm_mm;
+	int error = 0;
+	pgoff_t pgoff;
+
+	if (name_addr == vma_get_anon_name(vma)) {
+		*prev = vma;
+		goto out;
+	}
+
+	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
+	*prev = vma_merge(mm, *prev, start, end, vma->vm_flags, vma->anon_vma,
+				vma->vm_file, pgoff, vma_policy(vma),
+				name_addr);
+	if (*prev) {
+		vma = *prev;
+		goto success;
+	}
+
+	*prev = vma;
+
+	if (start != vma->vm_start) {
+		error = split_vma(mm, vma, start, 1);
+		if (error)
+			goto out;
+	}
+
+	if (end != vma->vm_end) {
+		error = split_vma(mm, vma, end, 0);
+		if (error)
+			goto out;
+	}
+
+success:
+	if (!vma->vm_file)
+		vma->shared.anon_name = name_addr;
+
+out:
+	if (error == -ENOMEM)
+		error = -EAGAIN;
+	return error;
+}
+
+static int prctl_set_vma_anon_name(unsigned long start, unsigned long end,
+			unsigned long arg)
+{
+	unsigned long tmp;
+	struct vm_area_struct * vma, *prev;
+	int unmapped_error = 0;
+	int error = -EINVAL;
+
+	/*
+	 * If the interval [start,end) covers some unmapped address
+	 * ranges, just ignore them, but return -ENOMEM at the end.
+	 * - this matches the handling in madvise.
+	 */
+	vma = find_vma_prev(current->mm, start, &prev);
+	if (vma && start > vma->vm_start)
+		prev = vma;
+
+	for (;;) {
+		/* Still start < end. */
+		error = -ENOMEM;
+		if (!vma)
+			return error;
+
+		/* Here start < (end|vma->vm_end). */
+		if (start < vma->vm_start) {
+			unmapped_error = -ENOMEM;
+			start = vma->vm_start;
+			if (start >= end)
+				return error;
+		}
+
+		/* Here vma->vm_start <= start < (end|vma->vm_end) */
+		tmp = vma->vm_end;
+		if (end < tmp)
+			tmp = end;
+
+		/* Here vma->vm_start <= start < tmp <= (end|vma->vm_end). */
+		error = prctl_update_vma_anon_name(vma, &prev, start, tmp,
+				(const char __user *)arg);
+		if (error)
+			return error;
+		start = tmp;
+		if (prev && start < prev->vm_end)
+			start = prev->vm_end;
+		error = unmapped_error;
+		if (start >= end)
+			return error;
+		if (prev)
+			vma = prev->vm_next;
+		else	/* madvise_remove dropped mmap_sem */
+			vma = find_vma(current->mm, start);
+	}
+}
+
+static int prctl_set_vma(unsigned long opt, unsigned long start,
+		unsigned long len_in, unsigned long arg)
+{
+	struct mm_struct *mm = current->mm;
+	int error;
+	unsigned long len;
+	unsigned long end;
+
+	if (start & ~PAGE_MASK)
+		return -EINVAL;
+	len = (len_in + ~PAGE_MASK) & PAGE_MASK;
+
+	/* Check to see whether len was rounded up from small -ve to zero */
+	if (len_in && !len)
+		return -EINVAL;
+
+	end = start + len;
+	if (end < start)
+		return -EINVAL;
+
+	if (end == start)
+		return 0;
+
+	down_write(&mm->mmap_sem);
+
+	switch (opt) {
+	case PR_SET_VMA_ANON_NAME:
+		error = prctl_set_vma_anon_name(start, end, arg);
+		break;
+	default:
+		error = -EINVAL;
+	}
+
+	up_write(&mm->mmap_sem);
+
+	return error;
+}
 
 SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		unsigned long, arg4, unsigned long, arg5)
 {
 	struct task_struct *me = current;
+	struct task_struct *tsk;
 	unsigned char comm[sizeof(me->comm)];
 	long error;
 
@@ -1966,7 +2203,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 				break;
 			}
 			me->pdeath_signal = arg2;
-			error = 0;
 			break;
 		case PR_GET_PDEATHSIG:
 			error = put_user(me->pdeath_signal, (int __user *)arg2);
@@ -1980,7 +2216,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 				break;
 			}
 			set_dumpable(me->mm, arg2);
-			error = 0;
 			break;
 
 		case PR_SET_UNALIGN:
@@ -2007,10 +2242,7 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		case PR_SET_TIMING:
 			if (arg2 != PR_TIMING_STATISTICAL)
 				error = -EINVAL;
-			else
-				error = 0;
 			break;
-
 		case PR_SET_NAME:
 			comm[sizeof(me->comm)-1] = 0;
 			if (strncpy_from_user(comm, (char __user *)arg2,
@@ -2018,25 +2250,24 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 				return -EFAULT;
 			set_task_comm(me, comm);
 			proc_comm_connector(me);
-			return 0;
+			break;
 		case PR_GET_NAME:
 			get_task_comm(comm, me);
 			if (copy_to_user((char __user *)arg2, comm,
 					 sizeof(comm)))
 				return -EFAULT;
-			return 0;
+			break;
 		case PR_GET_ENDIAN:
 			error = GET_ENDIAN(me, arg2);
 			break;
 		case PR_SET_ENDIAN:
 			error = SET_ENDIAN(me, arg2);
 			break;
-
 		case PR_GET_SECCOMP:
 			error = prctl_get_seccomp();
 			break;
 		case PR_SET_SECCOMP:
-			error = prctl_set_seccomp(arg2);
+			error = prctl_set_seccomp(arg2, (char __user *)arg3);
 			break;
 		case PR_GET_TSC:
 			error = GET_TSC_CTL(arg2);
@@ -2051,6 +2282,9 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			error = perf_event_task_enable();
 			break;
 		case PR_GET_TIMERSLACK:
+		if (current->timer_slack_ns > ULONG_MAX)
+			error = ULONG_MAX;
+		else
 			error = current->timer_slack_ns;
 			break;
 		case PR_SET_TIMERSLACK:
@@ -2059,7 +2293,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 					current->default_timer_slack_ns;
 			else
 				current->timer_slack_ns = arg2;
-			error = 0;
 			break;
 		case PR_MCE_KILL:
 			if (arg4 | arg5)
@@ -2085,7 +2318,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			default:
 				return -EINVAL;
 			}
-			error = 0;
 			break;
 		case PR_MCE_KILL_GET:
 			if (arg2 | arg3 | arg4 | arg5)
@@ -2099,13 +2331,45 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		case PR_SET_MM:
 			error = prctl_set_mm(arg2, arg3, arg4, arg5);
 			break;
+		case PR_GET_TID_ADDRESS:
+			error = prctl_get_tid_address(me, (int __user **)arg2);
+			break;
 		case PR_SET_CHILD_SUBREAPER:
 			me->signal->is_child_subreaper = !!arg2;
-			error = 0;
 			break;
 		case PR_GET_CHILD_SUBREAPER:
 			error = put_user(me->signal->is_child_subreaper,
 					 (int __user *) arg2);
+			break;
+		case PR_SET_NO_NEW_PRIVS:
+			if (arg2 != 1 || arg3 || arg4 || arg5)
+				return -EINVAL;
+
+			task_set_no_new_privs(current);
+			break;
+		case PR_GET_NO_NEW_PRIVS:
+			if (arg2 || arg3 || arg4 || arg5)
+				return -EINVAL;
+			return task_no_new_privs(current) ? 1 : 0;
+		case PR_SET_VMA:
+			error = prctl_set_vma(arg2, arg3, arg4, arg5);
+			break;
+		case PR_SET_TIMERSLACK_PID:
+			rcu_read_lock();
+			tsk = find_task_by_pid_ns((pid_t)arg3, &init_pid_ns);
+			if (tsk == NULL) {
+				rcu_read_unlock();
+				return -EINVAL;
+			}
+			get_task_struct(tsk);
+			rcu_read_unlock();
+			if (arg2 <= 0)
+				tsk->timer_slack_ns =
+					tsk->default_timer_slack_ns;
+			else
+				tsk->timer_slack_ns = arg2;
+			put_task_struct(tsk);
+			error = 0;
 			break;
 		default:
 			error = -EINVAL;

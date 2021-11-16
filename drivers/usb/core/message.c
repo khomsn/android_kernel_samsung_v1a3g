@@ -1272,11 +1272,6 @@ void usb_enable_interface(struct usb_device *dev,
  * is submitted that needs that bandwidth.  Some other operating systems
  * allocate bandwidth early, when a configuration is chosen.
  *
- * xHCI reserves bandwidth and configures the alternate setting in
- * usb_hcd_alloc_bandwidth(). If it fails the original interface altsetting
- * may be disabled. Drivers cannot rely on any particular alternate
- * setting being in effect after a failure.
- *
  * This call is synchronous, and may not be used in an interrupt context.
  * Also, drivers must not change altsettings while urbs are scheduled for
  * endpoints in that interface; all such urbs must first be completed
@@ -1313,12 +1308,6 @@ int usb_set_interface(struct usb_device *dev, int interface, int alternate)
 			 alternate);
 		return -EINVAL;
 	}
-	/*
-	 * usb3 hosts configure the interface in usb_hcd_alloc_bandwidth,
-	 * including freeing dropped endpoint ring buffers.
-	 * Make sure the interface endpoints are flushed before that
-	 */
-	usb_disable_interface(dev, iface, false);
 
 	/* Make sure we have enough bandwidth for this alternate interface.
 	 * Remove the current alt setting and add the new alt setting.
@@ -1551,7 +1540,7 @@ static int usb_if_uevent(struct device *dev, struct kobj_uevent_env *env)
 
 	if (add_uevent_var(env,
 		   "MODALIAS=usb:"
-		   "v%04Xp%04Xd%04Xdc%02Xdsc%02Xdp%02Xic%02Xisc%02Xip%02X",
+		   "v%04Xp%04Xd%04Xdc%02Xdsc%02Xdp%02Xic%02Xisc%02Xip%02Xin%02X",
 		   le16_to_cpu(usb_dev->descriptor.idVendor),
 		   le16_to_cpu(usb_dev->descriptor.idProduct),
 		   le16_to_cpu(usb_dev->descriptor.bcdDevice),
@@ -1560,7 +1549,8 @@ static int usb_if_uevent(struct device *dev, struct kobj_uevent_env *env)
 		   usb_dev->descriptor.bDeviceProtocol,
 		   alt->desc.bInterfaceClass,
 		   alt->desc.bInterfaceSubClass,
-		   alt->desc.bInterfaceProtocol))
+		   alt->desc.bInterfaceProtocol,
+		   alt->desc.bInterfaceNumber))
 		return -ENOMEM;
 
 	return 0;
@@ -1751,7 +1741,7 @@ free_interfaces:
 			}
 		}
 
-		i = dev->bus_mA - cp->desc.bMaxPower * 2;
+		i = dev->bus_mA - usb_get_max_power(dev, cp);
 		if (i < 0)
 			dev_warn(&dev->dev, "new config #%d exceeds power "
 					"limit by %dmA\n",

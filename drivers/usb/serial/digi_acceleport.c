@@ -1265,6 +1265,7 @@ static int digi_startup_device(struct usb_serial *serial)
 static int digi_startup(struct usb_serial *serial)
 {
 
+	struct device *dev = &serial->interface->dev;
 	int i;
 	struct digi_port *priv;
 	struct digi_serial *serial_priv;

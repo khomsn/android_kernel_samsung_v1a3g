@@ -149,3 +149,5 @@ obj-$(CONFIG_ICE4_FPGA)		+= ice4_fpga/
 ifeq (1, $(shell if [ -d ./drivers/exfat ] ; then echo 1 ; fi))
 obj-y				+= exfat/
 endif
+
+obj-$(CONFIG_ANDROID)		+= android/

@@ -156,7 +156,7 @@ static int max77803_i2c_probe(struct i2c_client *i2c,
 		/* print rev */
 		max77803->pmic_rev = (reg_data & 0x7);
 		max77803->pmic_ver = ((reg_data & 0xF8) >> 0x3);
-		pr_debug("%s: device found: rev.0x%x, ver.0x%x\n", __func__,
+		pr_info("%s: device found: rev.0x%x, ver.0x%x\n", __func__,
 				max77803->pmic_rev, max77803->pmic_ver);
 	}
 	/* No active discharge on safeout ldo 1,2 */

@@ -20,8 +20,6 @@ header-y += netfilter_ipv6/
 header-y += usb/
 header-y += wimax/
 
-objhdr-y += version.h
-
 ifneq ($(wildcard $(srctree)/arch/$(SRCARCH)/include/asm/a.out.h \
 		  $(srctree)/include/asm-$(SRCARCH)/a.out.h \
 		  $(INSTALL_HDR_PATH)/include/asm-*/a.out.h),)
@@ -131,7 +129,6 @@ header-y += fdreg.h
 header-y += fib_rules.h
 header-y += fiemap.h
 header-y += filter.h
-header-y += fimg2d.h
 header-y += firewire-cdev.h
 header-y += firewire-constants.h
 header-y += flat.h
@@ -338,6 +335,7 @@ header-y += scc.h
 header-y += sched.h
 header-y += screen_info.h
 header-y += sdla.h
+header-y += seccomp.h
 header-y += securebits.h
 header-y += selinux_netlink.h
 header-y += sem.h
@@ -350,7 +348,6 @@ header-y += signal.h
 header-y += signalfd.h
 header-y += snmp.h
 header-y += socket.h
-header-y += sockev.h
 header-y += sockios.h
 header-y += som.h
 header-y += sonet.h
@@ -397,6 +394,7 @@ header-y += vhost.h
 header-y += videodev2.h
 header-y += videodev2_exynos_media.h
 header-y += videodev2_exynos_media_ext.h
+header-y += videodev2_exynos_camera.h
 header-y += virtio_9p.h
 header-y += virtio_balloon.h
 header-y += virtio_blk.h

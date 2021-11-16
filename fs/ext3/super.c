@@ -543,6 +543,11 @@ static int init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(ext3_inode_cachep);
 }
 
@@ -2049,6 +2054,7 @@ static int ext3_fill_super (struct super_block *sb, void *data, int silent)
 		test_opt(sb,DATA_FLAGS) == EXT3_MOUNT_JOURNAL_DATA ? "journal":
 		test_opt(sb,DATA_FLAGS) == EXT3_MOUNT_ORDERED_DATA ? "ordered":
 		"writeback");
+	sb->s_flags |= MS_SNAP_STABLE;
 
 	return 0;
 
@@ -2576,6 +2582,8 @@ static int ext3_remount (struct super_block * sb, int * flags, char * data)
 #ifdef CONFIG_QUOTA
 	int i;
 #endif
+
+	sync_filesystem(sb);
 
 	/* Store the original options */
 	lock_super(sb);

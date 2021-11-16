@@ -127,7 +127,7 @@ extern int s5p_mic_disable(struct s5p_mic *mic);
 #ifdef CONFIG_FB_S3C_DEBUG_REGWRITE
 #undef writel
 #define writel(v, r) do { \
-	printk(KERN_DEBUG "%s: %08x => %p\n", __func__, (unsigned int)v, r); \
+	pr_debug("%s: %08x => %p\n", __func__, (unsigned int)v, r); \
 	__raw_writel(v, r); \
 } while (0)
 #endif /* FB_S3C_DEBUG_REGWRITE */
@@ -961,10 +961,10 @@ static int s3c_fb_check_var(struct fb_var_screeninfo *var,
 	case 8:
 		if (sfb->variant.palette[win->index] != 0) {
 			/* non palletised, A:1,R:2,G:3,B:2 mode */
-			var->red.offset		= 0;
+			var->red.offset		= 5;
 			var->green.offset	= 2;
-			var->blue.offset	= 4;
-			var->red.length		= 5;
+			var->blue.offset	= 0;
+			var->red.length		= 2;
 			var->green.length	= 3;
 			var->blue.length	= 2;
 			var->transp.offset	= 7;
@@ -1022,6 +1022,7 @@ static int s3c_fb_check_var(struct fb_var_screeninfo *var,
 
 	default:
 		dev_err(sfb->dev, "invalid bpp\n");
+		return -EINVAL;
 	}
 
 	x = var->xres + var->left_margin + var->right_margin + var->hsync_len;
@@ -2000,8 +2001,7 @@ void s3c_fb_enable_trigger(struct s3c_fb *sfb)
 #if defined(CONFIG_FB_I80IF)
 int s3c_fb_enable_trigger_by_dsim(struct device *fimd, unsigned int enable)
 {
-	struct platform_device *pdev = to_platform_device(fimd);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 
 	if (enable) {
 		s3c_fb_enable_clk(sfb);
@@ -2021,8 +2021,7 @@ int s3c_fb_enable_trigger_by_dsim(struct device *fimd, unsigned int enable)
 
 int s3c_fb_enable_trigger_by_mdnie(struct device *fimd)
 {
-	struct platform_device *pdev = to_platform_device(fimd);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 
 	if (!sfb->output_on) return 0;
 
@@ -3495,12 +3494,6 @@ static ssize_t s3c_fb_read(struct fb_info *info, char __user *buf,
 	return 0;
 }
 
-static ssize_t s3c_fb_write(struct fb_info *info, char const __user *buf,
-		size_t count, loff_t *ppos)
-{
-	return 0;
-}
-
 static int s3c_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			unsigned long arg)
 {
@@ -3725,7 +3718,6 @@ static struct fb_ops s3c_fb_ops = {
 	.fb_copyarea	= cfb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
 	.fb_read	= s3c_fb_read,
-	.fb_write	= s3c_fb_write,
 	.fb_pan_display	= s3c_fb_pan_display,
 	.fb_ioctl	= s3c_fb_ioctl,
 #if !defined(CONFIG_FB_EXYNOS_FIMD_SYSMMU_DISABLE)
@@ -3739,7 +3731,7 @@ static struct fb_ops s3c_fb_ops = {
  *
  * Calculate the pixel clock when none has been given through platform data.
  */
-static void __devinit s3c_fb_missing_pixclock(struct fb_videomode *mode)
+static void s3c_fb_missing_pixclock(struct fb_videomode *mode)
 {
 	u64 pixclk = 1000000000000ULL;
 	u32 div;
@@ -4728,8 +4720,7 @@ int s3c_fb_sysmmu_fault_handler(struct device *dev, const char *mmuname,
 		enum exynos_sysmmu_inttype itype, unsigned long pgtable_base,
 		unsigned long fault_addr)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 
 	pr_err("FIMD1 PAGE FAULT occurred at 0x%lx (Page table base: 0x%lx)\n",
 			fault_addr, pgtable_base);
@@ -6067,8 +6058,7 @@ err:
 #ifdef CONFIG_PM_SLEEP
 static int s3c_fb_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 	int ret = 0;
 	u32 vidcon0;
 
@@ -6137,8 +6127,7 @@ static int s3c_fb_suspend(struct device *dev)
 
 static int s3c_fb_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 	struct s3c_fb_platdata *pd = sfb->pdata;
 
 	int win_no;
@@ -6253,8 +6242,7 @@ err:
 #ifdef CONFIG_PM_RUNTIME
 static int s3c_fb_runtime_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 
 #ifdef CONFIG_FB_S5P_MDNIE
 	mdnie_s3cfb_suspend();
@@ -6288,8 +6276,7 @@ static int s3c_fb_runtime_suspend(struct device *dev)
 static int boot_skip_cnt = 1;
 static int s3c_fb_runtime_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct s3c_fb *sfb = platform_get_drvdata(pdev);
+	struct s3c_fb *sfb = dev_get_drvdata(dev);
 	u32 reg;
 
 	/* Keep on clock of FIMD during boot time */

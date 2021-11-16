@@ -15,7 +15,7 @@
 
 #include <linux/workqueue.h>
 #include <linux/leds.h>
- 
+
 struct device;
 
 /*

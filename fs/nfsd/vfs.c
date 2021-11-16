@@ -517,7 +517,7 @@ set_nfsv4_acl_one(struct dentry *dentry, struct posix_acl *pacl, char *key)
 	if (buf == NULL)
 		goto out;
 
-	len = posix_acl_to_xattr(pacl, buf, buflen);
+	len = posix_acl_to_xattr(&init_user_ns, pacl, buf, buflen);
 	if (len < 0) {
 		error = len;
 		goto out;
@@ -586,7 +586,7 @@ _get_posix_acl(struct dentry *dentry, char *key)
 	if (buflen <= 0)
 		return ERR_PTR(buflen);
 
-	pacl = posix_acl_from_xattr(buf, buflen);
+	pacl = posix_acl_from_xattr(&init_user_ns, buf, buflen);
 	kfree(buf);
 	return pacl;
 }
@@ -1958,6 +1958,7 @@ struct buffered_dirent {
 };
 
 struct readdir_data {
+	struct dir_context ctx;
 	char		*dirent;
 	size_t		used;
 	int		full;
@@ -1989,13 +1990,15 @@ static int nfsd_buffered_filldir(void *__buf, const char *name, int namlen,
 static __be32 nfsd_buffered_readdir(struct file *file, filldir_t func,
 				    struct readdir_cd *cdp, loff_t *offsetp)
 {
-	struct readdir_data buf;
 	struct buffered_dirent *de;
 	int host_err;
 	int size;
 	loff_t offset;
+	struct readdir_data buf = {
+		.ctx.actor = nfsd_buffered_filldir,
+		.dirent = (void *)__get_free_page(GFP_KERNEL)
+	};
 
-	buf.dirent = (void *)__get_free_page(GFP_KERNEL);
 	if (!buf.dirent)
 		return nfserrno(-ENOMEM);
 
@@ -2009,7 +2012,7 @@ static __be32 nfsd_buffered_readdir(struct file *file, filldir_t func,
 		buf.used = 0;
 		buf.full = 0;
 
-		host_err = vfs_readdir(file, nfsd_buffered_filldir, &buf);
+		host_err = iterate_dir(file, &buf.ctx);
 		if (buf.full)
 			host_err = 0;
 
@@ -2299,7 +2302,7 @@ nfsd_get_posix_acl(struct svc_fh *fhp, int type)
 	if (size < 0)
 		return ERR_PTR(size);
 
-	acl = posix_acl_from_xattr(value, size);
+	acl = posix_acl_from_xattr(&init_user_ns, value, size);
 	kfree(value);
 	return acl;
 }
@@ -2332,7 +2335,7 @@ nfsd_set_posix_acl(struct svc_fh *fhp, int type, struct posix_acl *acl)
 		value = kmalloc(size, GFP_KERNEL);
 		if (!value)
 			return -ENOMEM;
-		error = posix_acl_to_xattr(acl, value, size);
+		error = posix_acl_to_xattr(&init_user_ns, acl, value, size);
 		if (error < 0)
 			goto getout;
 		size = error;

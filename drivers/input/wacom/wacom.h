@@ -111,13 +111,7 @@
 #define WACOM_BOOSTER
 #endif
 
-#if defined (CONFIG_V1A)  || defined(CONFIG_CHAGALL)
-#define EPEN_KEY_MENU KEY_RECENT
-#else
-#define EPEN_KEY_MENU KEY_MENU
-#endif
-
-#if defined(CONFIG_V1A) || defined(CONFIG_CHAGALL)
+#if defined(CONFIG_CHAGALL)
 #define WACOM_CONNECTION_CHECK
 
 /* softkey block workaround */
@@ -137,11 +131,7 @@
 #define LCD_FREQ_BOTTOM 97500
 #define LCD_FREQ_TOP 98500
 #endif
-#ifdef CONFIG_V1A_WIFI
-#define LCD_FREQ_SUPPORT_HWID 5
-#else
 #define LCD_FREQ_SUPPORT_HWID 7
-#endif
 
 #define WACOM_X_INVERT 0
 #define WACOM_XY_SWITCH 0
@@ -169,13 +159,11 @@
 #define WACOM_BOOSTER_MIF_FREQ3 400000
 #define WACOM_BOOSTER_INT_FREQ3 222000
 
-#elif defined(CONFIG_N1A)
+#elif defined(CONFIG_N1A) || defined(CONFIG_V1A)
 
 #define WACOM_CONNECTION_CHECK
 
 #define EPEN_IRQF_TRIGGER_TYPE IRQF_TRIGGER_RISING
-
-#define WACOM_HAVE_FWE_PIN
 
 #define WACOM_USE_SOFTKEY
 #define WACOM_USE_GAIN
@@ -426,6 +414,12 @@ struct wacom_i2c {
 #endif
 	struct work_struct update_work;
 	struct fw_update_info update_info;
+
+	int enabled_gestures;
+	int gesture_key;
+	int gesture_start_x;
+	int gesture_start_y;
+	ktime_t gesture_start_time;
 };
 
 #if defined(CONFIG_INPUT_BOOSTER) || defined(WACOM_BOOSTER)

@@ -1,4 +1,3 @@
-/* Copyright (c) 2015 Samsung Electronics Co., Ltd. */
 /*
  * INET		An implementation of the TCP/IP protocol suite for the LINUX
  *		operating system.  INET is implemented using the  BSD Socket
@@ -88,14 +87,6 @@
  *		modify it under the terms of the GNU General Public License
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
- */
-/*
- *  Changes:
- *  KwnagHyun Kim <kh0304.kim@samsung.com> 2015/07/08
- *  Baesung Park  <baesung.park@samsung.com> 2015/07/08
- *  Vignesh Saravanaperumal <vignesh1.s@samsung.com> 2015/07/08
- *    Add codes to share UID/PID information
- *
  */
 
 #include <linux/capability.h>
@@ -801,6 +792,12 @@ set_rcvbuf:
 		sock_valbool_flag(sk, SOCK_NOFCS, valbool);
 		break;
 
+	case SO_MAX_PACING_RATE:
+		sk->sk_max_pacing_rate = val;
+		sk->sk_pacing_rate = min(sk->sk_pacing_rate,
+					 sk->sk_max_pacing_rate);
+		break;
+
 	default:
 		ret = -ENOPROTOOPT;
 		break;
@@ -1041,6 +1038,11 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 	case SO_NOFCS:
 		v.val = !!sock_flag(sk, SOCK_NOFCS);
 		break;
+
+	case SO_MAX_PACING_RATE:
+		v.val = sk->sk_max_pacing_rate;
+		break;
+
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -1117,9 +1119,8 @@ static struct sock *sk_prot_alloc(struct proto *prot, gfp_t priority,
 	slab = prot->slab;
 	if (slab != NULL) {
 		sk = kmem_cache_alloc(slab, priority & ~__GFP_ZERO);
-		if (!sk) {
+		if (!sk)
 			return sk;
-		}
 		if (priority & __GFP_ZERO) {
 			if (prot->clear_sk)
 				prot->clear_sk(sk, prot->obj_size);
@@ -1128,6 +1129,7 @@ static struct sock *sk_prot_alloc(struct proto *prot, gfp_t priority,
 		}
 	} else
 		sk = kmalloc(prot->obj_size, priority);
+
 	if (sk != NULL) {
 		kmemcheck_annotate_bitfield(sk, flags);
 
@@ -1137,6 +1139,11 @@ static struct sock *sk_prot_alloc(struct proto *prot, gfp_t priority,
 		if (!try_module_get(prot->owner))
 			goto out_free_sec;
 		sk_tx_queue_clear(sk);
+
+// ------------- START of KNOX_VPN ------------------//
+        sk->knox_uid = current->cred->uid;
+        sk->knox_pid = current->tgid;
+// ------------- END of KNOX_VPN -------------------//
 	}
 
 	return sk;
@@ -1470,11 +1477,6 @@ void sock_rfree(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(sock_rfree);
 
-void sock_efree(struct sk_buff *skb)
-{
-	sock_put(skb->sk);
-}
-EXPORT_SYMBOL(sock_efree);
 
 int sock_i_uid(struct sock *sk)
 {
@@ -1746,20 +1748,21 @@ static void __release_sock(struct sock *sk)
  * sk_wait_data - wait for data to arrive at sk_receive_queue
  * @sk:    sock to wait on
  * @timeo: for how long
+ * @skb:   last skb seen on sk_receive_queue
  *
  * Now socket state including sk->sk_err is changed only under lock,
  * hence we may omit checks after joining wait queue.
  * We check receive queue before schedule() only as optimization;
  * it is very likely that release_sock() added new data.
  */
-int sk_wait_data(struct sock *sk, long *timeo)
+int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 {
 	int rc;
 	DEFINE_WAIT(wait);
 
 	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
 	set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
-	rc = sk_wait_event(sk, timeo, !skb_queue_empty(&sk->sk_receive_queue));
+	rc = sk_wait_event(sk, timeo, skb_peek_tail(&sk->sk_receive_queue) != skb);
 	clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 	finish_wait(sk_sleep(sk), &wait);
 	return rc;
@@ -2099,8 +2102,11 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 		sk->sk_type	=	sock->type;
 		sk->sk_wq	=	sock->wq;
 		sock->sk	=	sk;
-	} else
+		sk->sk_uid	=	SOCK_INODE(sock)->i_uid;
+	} else {
 		sk->sk_wq	=	NULL;
+		sk->sk_uid	=	make_kuid(sock_net(sk)->user_ns, 0);
+	}
 
 	spin_lock_init(&sk->sk_dst_lock);
 	rwlock_init(&sk->sk_callback_lock);
@@ -2126,6 +2132,8 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->sk_sndtimeo		=	MAX_SCHEDULE_TIMEOUT;
 
 	sk->sk_stamp = ktime_set(-1L, 0);
+
+	sk->sk_max_pacing_rate = ~0U;
 
 	/*
 	 * Before updating sk_refcnt, we must commit prior changes to memory
@@ -2163,6 +2171,10 @@ void release_sock(struct sock *sk)
 	spin_lock_bh(&sk->sk_lock.slock);
 	if (sk->sk_backlog.tail)
 		__release_sock(sk);
+
+	if (sk->sk_prot->release_cb)
+		sk->sk_prot->release_cb(sk);
+
 	sk->sk_lock.owned = 0;
 	if (waitqueue_active(&sk->sk_lock.wq))
 		wake_up(&sk->sk_lock.wq);

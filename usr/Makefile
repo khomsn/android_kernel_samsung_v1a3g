@@ -5,22 +5,7 @@
 klibcdirs:;
 PHONY += klibcdirs
 
-
-# Gzip
-suffix_$(CONFIG_INITRAMFS_COMPRESSION_GZIP)   = .gz
-
-# Bzip2
-suffix_$(CONFIG_INITRAMFS_COMPRESSION_BZIP2)  = .bz2
-
-# Lzma
-suffix_$(CONFIG_INITRAMFS_COMPRESSION_LZMA)   = .lzma
-
-# XZ
-suffix_$(CONFIG_INITRAMFS_COMPRESSION_XZ)     = .xz
-
-# Lzo
-suffix_$(CONFIG_INITRAMFS_COMPRESSION_LZO)   = .lzo
-
+suffix_y = $(CONFIG_INITRAMFS_COMPRESSION)
 AFLAGS_initramfs_data.o += -DINITRAMFS_IMAGE="usr/initramfs_data.cpio$(suffix_y)"
 
 # Generate builtin.o based on initramfs_data.o
@@ -53,7 +38,10 @@ endif
 quiet_cmd_initfs = GEN     $@
       cmd_initfs = $(initramfs) -o $@ $(ramfs-args) $(ramfs-input)
 
-targets := initramfs_data.cpio.gz initramfs_data.cpio.bz2 initramfs_data.cpio.lzma initramfs_data.cpio.xz initramfs_data.cpio.lzo initramfs_data.cpio
+targets := initramfs_data.cpio.gz initramfs_data.cpio.bz2 \
+	initramfs_data.cpio.lzma initramfs_data.cpio.xz \
+	initramfs_data.cpio.lzo initramfs_data.cpio.lz4 \
+	initramfs_data.cpio
 # do not try to update files included in initramfs
 $(deps_initramfs): ;
 
@@ -66,4 +54,3 @@ $(deps_initramfs): klibcdirs
 $(obj)/initramfs_data.cpio$(suffix_y): $(obj)/gen_init_cpio $(deps_initramfs) klibcdirs
 	$(Q)$(initramfs) -l $(ramfs-input) > $(obj)/.initramfs_data.cpio.d
 	$(call if_changed,initfs)
-

@@ -84,7 +84,7 @@ static char *zswap_compressor = ZSWAP_COMPRESSOR_DEFAULT;
 module_param_named(compressor, zswap_compressor, charp, 0);
 
 /* The maximum percentage of memory that the compressed pool can occupy */
-static unsigned int zswap_max_pool_percent = 20;
+static unsigned int zswap_max_pool_percent = 50;
 module_param_named(max_pool_percent,
 			zswap_max_pool_percent, uint, 0644);
 
@@ -428,12 +428,6 @@ static void zswap_free_page(struct page *page)
 	mempool_free(page, zswap_page_pool);
 	atomic_dec(&zswap_pool_pages);
 }
-
-static struct zs_ops zswap_zs_ops = {
-	.alloc = zswap_alloc_page,
-	.free = zswap_free_page
-};
-
 
 /*********************************
 * helpers
@@ -817,9 +811,7 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 	}
 
 	/* store */
-	handle = zs_malloc(tree->pool, dlen,
-		__GFP_NORETRY | __GFP_HIGHMEM | __GFP_NOMEMALLOC |
-			__GFP_NOWARN);
+	handle = zs_malloc(tree->pool, dlen);
 	if (!handle) {
 		ret = -ENOMEM;
 		goto freepage;
@@ -1042,7 +1034,7 @@ static void zswap_frontswap_init(unsigned type)
 	tree = kzalloc(sizeof(struct zswap_tree), GFP_NOWAIT);
 	if (!tree)
 		goto err;
-	tree->pool = zs_create_pool(GFP_NOWAIT, &zswap_zs_ops);
+	tree->pool = zs_create_pool(GFP_NOWAIT);
 	if (!tree->pool)
 		goto freetree;
 	tree->rbroot = RB_ROOT;

@@ -14,6 +14,518 @@
 
 #include <linux/battery/sec_fuelgauge.h>
 
+#ifdef CONFIG_FUELGAUGE_MAX17050_VOLTAGE_TRACKING
+static int max17050_write_reg(struct i2c_client *client, int reg, u8 *buf)
+{
+	int ret;
+
+	ret = i2c_smbus_write_i2c_block_data(client, reg, 2, buf);
+
+	if (ret < 0)
+		dev_err(&client->dev, "%s: Error(%d)\n", __func__, ret);
+
+	return ret;
+}
+
+static int max17050_read_reg(struct i2c_client *client, int reg, u8 *buf)
+{
+	int ret;
+
+	ret = i2c_smbus_read_i2c_block_data(client, reg, 2, buf);
+
+	if (ret < 0)
+		dev_err(&client->dev, "%s: Error(%d)\n", __func__, ret);
+
+	return ret;
+}
+
+static void max17050_write_reg_array(struct i2c_client *client,
+				     u8 *buf, int size)
+{
+	int i;
+
+	for (i = 0; i < size; i += 3)
+		max17050_write_reg(client, (u8) (*(buf + i)), (buf + i) + 1);
+}
+
+static void max17050_init_regs(struct i2c_client *client)
+{
+	u8 data[2];
+
+	if (max17050_read_reg(client, MAX17050_REG_FILTERCFG, data) < 0)
+		return;
+
+	/* Clear average vcell (12 sec) */
+	data[0] &= 0x8f;
+
+	max17050_write_reg(client, MAX17050_REG_FILTERCFG, data);
+}
+
+static void max17050_get_version(struct i2c_client *client)
+{
+	u8 data[2];
+
+	if (max17050_read_reg(client, MAX17050_REG_VERSION, data) < 0)
+		return;
+
+	dev_dbg(&client->dev, "MAX17050 Fuel-Gauge Ver %d%d\n",
+		data[0], data[1]);
+}
+
+static void max17050_alert_init(struct i2c_client *client)
+{
+	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
+	u8 data[2];
+
+	/* SALRT Threshold setting */
+	data[0] = fuelgauge->pdata->fuel_alert_soc;
+	data[1] = 0xff;
+	max17050_write_reg(client, MAX17050_REG_SALRT_TH, data);
+
+	/* VALRT Threshold setting */
+	data[0] = 0x00;
+	data[1] = 0xff;
+	max17050_write_reg(client, MAX17050_REG_VALRT_TH, data);
+
+	/* TALRT Threshold setting */
+	data[0] = 0x80;
+	data[1] = 0x7f;
+	max17050_write_reg(client, MAX17050_REG_TALRT_TH, data);
+}
+
+static bool max17050_check_status(struct i2c_client *client)
+{
+	u8 data[2];
+	bool ret = false;
+
+	/* check if Smn was generated */
+	if (max17050_read_reg(client, MAX17050_REG_STATUS, data) < 0)
+		return ret;
+
+	dev_info(&client->dev, "%s: status_reg(%02x%02x)\n",
+		__func__, data[1], data[0]);
+
+	/* minimum SOC threshold exceeded. */
+	if (data[1] & (0x1 << 2))
+		ret = true;
+
+	/* clear status reg */
+	if (!ret) {
+		data[1] = 0;
+		max17050_write_reg(client, MAX17050_REG_STATUS, data);
+		msleep(200);
+	}
+
+	return ret;
+}
+
+static int max17050_set_temperature(struct i2c_client *client, int temperature)
+{
+	u8 data[2];
+
+	data[0] = 0;
+	data[1] = temperature;
+	max17050_write_reg(client, MAX17050_REG_TEMPERATURE, data);
+
+	dev_dbg(&client->dev, "%s: temperature to (%d)\n",
+		__func__, temperature);
+
+	return temperature;
+}
+
+static int max17050_get_temperature(struct i2c_client *client)
+{
+	u8 data[2];
+	s32 temperature = 0;
+
+	if (max17050_read_reg(client, MAX17050_REG_TEMPERATURE, data) < 0)
+		return -ERANGE;
+
+	/* data[] store 2's compliment format number */
+	if (data[1] & (0x1 << 7)) {
+		/* Negative */
+		temperature = ((~(data[1])) & 0xFF) + 1;
+		temperature *= (-1000);
+	} else {
+		temperature = data[1] & 0x7F;
+		temperature *= 1000;
+		temperature += data[0] * 39 / 10;
+	}
+
+	dev_dbg(&client->dev, "%s: temperature (%d)\n",
+		__func__, temperature);
+
+	return temperature;
+}
+
+/* soc should be 0.01% unit */
+static int max17050_get_soc(struct i2c_client *client)
+{
+	u8 data[2];
+	int soc;
+
+	if (max17050_read_reg(client, MAX17050_REG_SOC_VF, data) < 0)
+		return -EINVAL;
+
+	soc = ((data[1] * 100) + (data[0] * 100 / 256));
+
+	dev_dbg(&client->dev, "%s: raw capacity (%d)\n", __func__, soc);
+
+	return min(soc, 10000);
+}
+
+static int max17050_get_vfocv(struct i2c_client *client)
+{
+	u8 data[2];
+	u32 vfocv = 0;
+
+	if (max17050_read_reg(client, MAX17050_REG_VFOCV, data) < 0)
+		return -EINVAL;
+
+	vfocv = ((data[0] >> 3) + (data[1] << 5)) * 625 / 1000;
+
+	dev_dbg(&client->dev, "%s: vfocv (%d)\n", __func__, vfocv);
+
+	return vfocv;
+}
+
+static int max17050_get_vcell(struct i2c_client *client)
+{
+	u8 data[2];
+	u32 vcell = 0;
+
+	if (max17050_read_reg(client, MAX17050_REG_VCELL, data) < 0)
+		return -EINVAL;
+
+	vcell = ((data[0] >> 3) + (data[1] << 5)) * 625 / 1000;
+
+	dev_dbg(&client->dev, "%s: vcell (%d)\n", __func__, vcell);
+
+	return vcell;
+}
+
+static int max17050_get_avgvcell(struct i2c_client *client)
+{
+	u8 data[2];
+	u32 avgvcell = 0;
+
+	if (max17050_read_reg(client, MAX17050_REG_AVGVCELL, data) < 0)
+		return -EINVAL;
+
+	avgvcell = ((data[0] >> 3) + (data[1] << 5)) * 625 / 1000;
+
+	dev_dbg(&client->dev, "%s: avgvcell (%d)\n", __func__, avgvcell);
+
+	return avgvcell;
+}
+
+bool sec_hal_fg_init(struct i2c_client *client)
+{
+	/* initialize fuel gauge registers */
+	max17050_init_regs(client);
+
+	max17050_get_version(client);
+
+	return true;
+}
+
+bool sec_hal_fg_suspend(struct i2c_client *client)
+{
+	return true;
+}
+
+bool sec_hal_fg_resume(struct i2c_client *client)
+{
+	return true;
+}
+
+bool sec_hal_fg_fuelalert_init(struct i2c_client *client, int soc)
+{
+	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
+	u8 data[2];
+
+	/* 1. Set max17050 alert configuration. */
+	max17050_alert_init(client);
+
+	if (max17050_read_reg(client, MAX17050_REG_CONFIG, data)
+	    < 0)
+		return -1;
+
+	/*Enable Alert (Aen = 1) */
+	data[0] |= (0x1 << 2);
+
+	max17050_write_reg(client, MAX17050_REG_CONFIG, data);
+
+	dev_dbg(&client->dev, "%s: config_reg(%02x%02x) irq(%d)\n",
+		 __func__, data[1], data[0], fuelgauge->pdata->fg_irq);
+
+	return true;
+}
+
+bool sec_hal_fg_is_fuelalerted(struct i2c_client *client)
+{
+	return max17050_check_status(client);
+}
+
+bool sec_hal_fg_fuelalert_process(void *irq_data, bool is_fuel_alerted)
+{
+	struct sec_fuelgauge_info *fuelgauge = irq_data;
+	u8 data[2];
+
+	/* update SOC */
+	/* max17050_get_soc(fuelgauge->client); */
+
+	if (is_fuel_alerted) {
+		if (max17050_read_reg(fuelgauge->client,
+				      MAX17050_REG_CONFIG, data) < 0)
+			return false;
+
+		data[1] |= (0x1 << 3);
+
+		max17050_write_reg(fuelgauge->client,
+				   MAX17050_REG_CONFIG, data);
+
+		dev_info(&fuelgauge->client->dev,
+			"%s: Fuel-alert Alerted!! (%02x%02x)\n",
+			__func__, data[1], data[0]);
+	} else {
+		if (max17050_read_reg(fuelgauge->client,
+				      MAX17050_REG_CONFIG, data)
+		    < 0)
+			return false;
+
+		data[1] &= (~(0x1 << 3));
+
+		max17050_write_reg(fuelgauge->client,
+				   MAX17050_REG_CONFIG, data);
+
+		dev_info(&fuelgauge->client->dev,
+			"%s: Fuel-alert Released!! (%02x%02x)\n",
+			__func__, data[1], data[0]);
+	}
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_VCELL, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_VCELL(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_TEMPERATURE, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_TEMPERATURE(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_CONFIG, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_CONFIG(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_VFOCV, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_VFOCV(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_SOC_VF, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_SOC_VF(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: FUEL GAUGE IRQ (%d)\n",
+		 __func__,
+		 gpio_get_value(fuelgauge->pdata->fg_irq));
+
+#if 0
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_STATUS, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_STATUS(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_VALRT_TH, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_VALRT_TH(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_TALRT_TH, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_TALRT_TH(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_SALRT_TH, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_SALRT_TH(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_AVGVCELL, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_AVGVCELL(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_VERSION, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_VERSION(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_LEARNCFG, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_LEARNCFG(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_MISCCFG, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_MISCCFG(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_CGAIN, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_CGAIN(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+
+	max17050_read_reg(fuelgauge->client, MAX17050_REG_RCOMP, data);
+	dev_dbg(&fuelgauge->client->dev,
+		"%s: MAX17050_REG_RCOMP(%02x%02x)\n",
+		 __func__, data[1], data[0]);
+#endif
+
+	return true;
+}
+
+bool sec_hal_fg_full_charged(struct i2c_client *client)
+{
+	return true;
+}
+
+bool sec_hal_fg_get_property(struct i2c_client *client,
+			     enum power_supply_property psp,
+			     union power_supply_propval *val)
+{
+	switch (psp) {
+		/* Cell voltage (VCELL, mV) */
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+		val->intval = max17050_get_vcell(client);
+		break;
+		/* Additional Voltage Information (mV) */
+	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
+		switch (val->intval) {
+		case SEC_BATTEY_VOLTAGE_AVERAGE:
+			val->intval = max17050_get_avgvcell(client);
+			break;
+		case SEC_BATTEY_VOLTAGE_OCV:
+			val->intval = max17050_get_vfocv(client);
+			break;
+		}
+		break;
+		/* Current (mA) */
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+		val->intval = 0;
+		break;
+		/* Average Current (mA) */
+	case POWER_SUPPLY_PROP_CURRENT_AVG:
+		val->intval = 0;
+		break;
+		/* SOC (%) */
+	case POWER_SUPPLY_PROP_CAPACITY:
+		if (val->intval == SEC_FUELGAUGE_CAPACITY_TYPE_RAW)
+			val->intval = max17050_get_soc(client);
+		else
+			val->intval = max17050_get_soc(client) / 10;
+		break;
+		/* Battery Temperature */
+	case POWER_SUPPLY_PROP_TEMP:
+		/* Target Temperature */
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
+		val->intval = max17050_get_temperature(client);
+		break;
+	default:
+		return false;
+	}
+	return true;
+}
+
+bool sec_hal_fg_set_property(struct i2c_client *client,
+			     enum power_supply_property psp,
+			     const union power_supply_propval *val)
+{
+	switch (psp) {
+		/* Battery Temperature */
+	case POWER_SUPPLY_PROP_TEMP:
+		/* Target Temperature */
+	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
+		max17050_set_temperature(client, val->intval);
+		break;
+	default:
+		return false;
+	}
+	return true;
+}
+
+ssize_t sec_hal_fg_show_attrs(struct device *dev,
+				const ptrdiff_t offset, char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sec_fuelgauge_info *fg =
+		container_of(psy, struct sec_fuelgauge_info, psy_fg);
+	int i = 0;
+
+	switch (offset) {
+/*	case FG_REG: */
+/*		break; */
+	case FG_DATA:
+		i += scnprintf(buf + i, PAGE_SIZE - i, "%02x%02x\n",
+			fg->reg_data[1], fg->reg_data[0]);
+		break;
+	default:
+		i = -EINVAL;
+		break;
+	}
+
+	return i;
+}
+
+ssize_t sec_hal_fg_store_attrs(struct device *dev,
+				const ptrdiff_t offset,
+				const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sec_fuelgauge_info *fg =
+		container_of(psy, struct sec_fuelgauge_info, psy_fg);
+	int ret = 0;
+	int x = 0;
+	u8 data[2];
+
+	switch (offset) {
+	case FG_REG:
+		if (sscanf(buf, "%x\n", &x) == 1) {
+			fg->reg_addr = x;
+			max17050_read_reg(fg->client,
+				fg->reg_addr, fg->reg_data);
+			dev_dbg(&fg->client->dev,
+				"%s: (read) addr = 0x%x, data = 0x%02x%02x\n",
+				 __func__, fg->reg_addr,
+				 fg->reg_data[1], fg->reg_data[0]);
+			ret = count;
+		}
+		break;
+	case FG_DATA:
+		if (sscanf(buf, "%x\n", &x) == 1) {
+			data[0] = (x & 0xFF00) >> 8;
+			data[1] = (x & 0x00FF);
+			dev_dbg(&fg->client->dev,
+				"%s: (write) addr = 0x%x, data = 0x%02x%02x\n",
+				__func__, fg->reg_addr, data[1], data[0]);
+			max17050_write_reg(fg->client,
+				fg->reg_addr, data);
+			ret = count;
+		}
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
 #ifdef CONFIG_FUELGAUGE_MAX17050_COULOMB_COUNTING
 static int fg_i2c_read(struct i2c_client *client,
 				u8 reg, u8 *data, u8 length)
@@ -116,15 +628,54 @@ static void fg_write_and_verify_register(struct i2c_client *client,
 	}
 }
 
+static int fg_read_avg_current(struct i2c_client *client, int unit)
+{
+	u8  data2[2];
+	u32 temp, sign;
+	s32 avg_current;
+
+	if (fg_i2c_read(client, AVG_CURRENT_REG, data2, 2) < 0) {
+		dev_err(&client->dev, "%s: Failed to read AVERAGE CURRENT\n",
+			__func__);
+		return -1;
+	}
+
+	temp = ((data2[1]<<8) | data2[0]) & 0xFFFF;
+	if (temp & (0x1 << 15)) {
+		sign = NEGATIVE;
+		temp = (~temp & 0xFFFF) + 1;
+	} else
+		sign = POSITIVE;
+
+	/* 1.5625uV/0.01Ohm(Rsense) = 156.25uA */
+	switch (unit) {
+	case SEC_BATTEY_CURRENT_UA:
+		avg_current = temp * 15625 / 100;
+		break;
+	case SEC_BATTEY_CURRENT_MA:
+	default:
+		avg_current = temp * 15625 / 100000;
+	}
+
+	if (sign)
+		avg_current *= -1;
+
+	return avg_current;
+}
+
 static void fg_test_print(struct i2c_client *client)
 {
-	u8 data[2];
-	u32 average_vcell;
-	u16 w_data;
-	u32 temp;
-	u32 temp2;
-	u16 reg_data;
+	u8 data[2], test_count, test_count2, time_avg_const, time_diff;
+	s32 average_vcell, average_current;
+	u16 w_data, soc, soc_rep, test_value, data_stored1, data_stored2, ratio;
+	u32 temp, temp2;
+	u16 reg_data, socmix, soc_cal_stored, full_cap, rem_cap, cell_cap, full_cap_100;
 
+	static u16 count_soc=0, rem_cap_prev = 0, count_p=0, soc_prev=0, jsoc_cap = 0;
+    static u8 first_start=0 , charging=0, jsoc = 0;
+    long int power = 0;
+    static long int power_full = 0, power_remain = 0, soc_cal_now=0;
+    
 	if (fg_i2c_read(client, AVR_VCELL_REG, data, 2) < 0) {
 		dev_err(&client->dev, "%s: Failed to read VCELL\n", __func__);
 		return;
@@ -137,18 +688,18 @@ static void fg_test_print(struct i2c_client *client)
 
 	temp = ((w_data & 0xF000) >> 4) * 78125;
 	temp2 = temp / 1000000;
-	average_vcell += (temp2 << 4);
+	average_vcell += (temp2 << 4); //mV
 
 	dev_info(&client->dev, "%s: AVG_VCELL(%d), data(0x%04x)\n", __func__,
 		average_vcell, (data[1]<<8) | data[0]);
 
-	reg_data = fg_read_register(client, FULLCAP_REG);
+	full_cap = fg_read_register(client, FULLCAP_REG);
 	dev_info(&client->dev, "%s: FULLCAP(%d), data(0x%04x)\n", __func__,
-		reg_data/2, reg_data);
+		full_cap/2, full_cap);
 
-	reg_data = fg_read_register(client, REMCAP_REP_REG);
+	rem_cap = fg_read_register(client, REMCAP_REP_REG);
 	dev_info(&client->dev, "%s: REMCAP_REP(%d), data(0x%04x)\n", __func__,
-		reg_data/2, reg_data);
+		rem_cap/2, rem_cap);
 
 	reg_data = fg_read_register(client, REMCAP_MIX_REG);
 	dev_info(&client->dev, "%s: REMCAP_MIX(%d), data(0x%04x)\n", __func__,
@@ -170,8 +721,14 @@ static void fg_test_print(struct i2c_client *client)
 	reg_data = fg_read_register(client, ATRATE_REG);
     dev_info(&client->dev, "%s: ATRATE_REG data(0x%04x)\n", __func__, reg_data);
     
-    reg_data = fg_read_register(client, SOCREP_REG);
-    dev_info(&client->dev, "%s: SOCREP_REG data(0x%04x)\n", __func__, reg_data);
+    soc_rep = fg_read_register(client, SOCREP_REG);
+    fg_i2c_read(client, SOCREP_REG, data, 2);
+    soc = ((data[1] * 100) + (data[0] * 100 / 256)) / 10;
+    dev_info(&client->dev, "%s: SOCREP_REG [%d] data(0x%04x)\n", __func__, soc, soc_rep);
+    
+    reg_data = fg_read_register(client, AGE_REG);
+    fg_i2c_read(client, AGE_REG, data, 2);
+    dev_info(&client->dev, "%s: AGE_REG [%d] data(0x%04x)\n", __func__, ((data[1] * 100) + (data[0] * 100 / 256)) / 10 , reg_data);
     
     reg_data = fg_read_register(client, TEMPERATURE_REG);
     dev_info(&client->dev, "%s: TEMPERATURE_REG data(0x%04x)\n", __func__, reg_data);
@@ -185,8 +742,8 @@ static void fg_test_print(struct i2c_client *client)
     reg_data = fg_read_register(client, AVG_CURRENT_REG);
     dev_info(&client->dev, "%s: AVG_CURRENT_REG data(0x%04x)\n", __func__, reg_data);
 
-    reg_data = fg_read_register(client, SOCMIX_REG);
-    dev_info(&client->dev, "%s: SOCMIX_REG data(0x%04x)\n", __func__, reg_data);
+    socmix = fg_read_register(client, SOCMIX_REG);
+    dev_info(&client->dev, "%s: SOCMIX_REG data(0x%04x)\n", __func__, socmix);
 
     reg_data = fg_read_register(client, SOCAV_REG);
     dev_info(&client->dev, "%s: SOCAV_REG data(0x%04x)\n", __func__, reg_data);
@@ -203,8 +760,8 @@ static void fg_test_print(struct i2c_client *client)
     reg_data = fg_read_register(client, CYCLES_REG);
     dev_info(&client->dev, "%s: CYCLES_REG data(0x%04x)\n", __func__, reg_data);
 
-    reg_data = fg_read_register(client, DESIGNCAP_REG);
-    dev_info(&client->dev, "%s: DESIGNCAP_REG data(0x%04x)\n", __func__, reg_data);
+    cell_cap = fg_read_register(client, DESIGNCAP_REG);
+    dev_info(&client->dev, "%s: DESIGNCAP_REG data(0x%04x)\n", __func__, cell_cap);
 
     reg_data = fg_read_register(client, AVR_VCELL_REG);
     dev_info(&client->dev, "%s: AVR_VCELL_REG data(0x%04x)\n", __func__, reg_data);
@@ -230,8 +787,8 @@ static void fg_test_print(struct i2c_client *client)
     reg_data = fg_read_register(client, DQACC_REG);
     dev_info(&client->dev, "%s: DQACC_REG data(0x%04x)\n", __func__, reg_data);
 
-    reg_data = fg_read_register(client, DPACC_REG);
-    dev_info(&client->dev, "%s: DPACC_REG data(0x%04x)\n", __func__, reg_data);
+    soc_cal_stored = fg_read_register(client, DPACC_REG);
+    dev_info(&client->dev, "%s: DPACC_REG data(0x%04x)\n", __func__, soc_cal_stored);
 
     reg_data = fg_read_register(client, OCV_REG);
     dev_info(&client->dev, "%s: OCV_REG data(0x%04x)\n", __func__, reg_data);
@@ -241,8 +798,300 @@ static void fg_test_print(struct i2c_client *client)
 
     reg_data = fg_read_register(client, VFSOC_REG);
     dev_info(&client->dev, "%s: VFSOC_REG data(0x%04x)\n", __func__, reg_data);
+    
+    reg_data = fg_read_register(client, MAX17050_REG_FILTERCFG);
+    dev_info(&client->dev, "%s: FILTERCFG data(0x%04x)\n", __func__, reg_data);
+    fg_i2c_read(client, MAX17050_REG_FILTERCFG, data, 2);
+/*************************************************************/  
+    count_soc += 1;
+    count_p += 1;
 
-/*************************************************************/
+    /* This loop every 151s when discharging, and 51s when charging
+     * actual REMCAP_REP value is 2 * data[] change for each read is to small to compare
+     * N1A battery should last for about 8Hr per full charge, so REMCAP_REP should not drop more
+     * than 86 per 151 sec. Then correct REMCAP_REP every 1 reading for N1A, let it drop not more
+     * than 86.
+     * V1A read every 151 Sec. Then REMCAP_REP drop by 99.
+     * Estimate constant rate..for full loaded system.
+     * Save Data every 151s or 2.31min when discharge
+     * Save Data every 51s when charge
+     * 
+     */
+#if defined(CONFIG_N1A)
+    /** source exynos5420 */
+    /* power_full ~ 2600000 */
+    test_value = 86, test_count = 1;// 1.31min
+    test_count2 = 4; //2*51sec=204sec
+    ratio = 158;
+    /* source v**/
+/*    test_value = 58, test_count = 1;// 1.42min
+    test_count2 = 2; //2*102sec=204sec=3.4min
+*/
+#endif
+#if defined(CONFIG_V1A)
+    /* power_full ~ 2800000 */
+    test_value = 99, test_count = 1;// 1.31min
+    test_count2 = 4; //4*51sec=204sec
+    ratio = 147;
+#endif
+    if (full_cap < cell_cap) {
+        full_cap_100 = cell_cap;
+    } else {
+        full_cap_100 = full_cap;
+    }
+    if (full_cap < full_cap_100) {
+        fg_write_register(client, FULLCAP_REG, full_cap_100);
+    }
+    /** check is soc correct **/
+    if (average_vcell >= 4000 && soc < 900 && !charging) {
+        soc = 900;
+        rem_cap = full_cap_100 * 9 / 10;
+        /* 4. Write RepSOC(06h)=90%; */
+        fg_write_register(client, SOCREP_REG, (u16)(0x5A << 8));
+        /* 5. Write MixSOC(0Dh)=90%; */
+        fg_write_register(client, SOCMIX_REG, (u16)(0x5A << 8));
+        /* 6. Write AVSOC(0Eh)=90%; */
+        fg_write_register(client, SOCAV_REG, (u16)(0x5A << 8));
+        fg_write_register(client, REMCAP_MIX_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_AV_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_REP_REG, (u16)rem_cap);
+    }
+    else if (average_vcell >= 3900 && soc < 800 && !charging) {
+        soc = 800;
+        rem_cap = full_cap_100 * 4 / 5;
+        /* 4. Write RepSOC(06h)=90%; */
+        fg_write_register(client, SOCREP_REG, (u16)(0x50 << 8));
+        /* 5. Write MixSOC(0Dh)=90%; */
+        fg_write_register(client, SOCMIX_REG, (u16)(0x50 << 8));
+        /* 6. Write AVSOC(0Eh)=90%; */
+        fg_write_register(client, SOCAV_REG, (u16)(0x50 << 8));
+        fg_write_register(client, REMCAP_MIX_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_AV_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_REP_REG, (u16)rem_cap);
+    }
+    else if (average_vcell >= 3600 && soc < 350 && !charging) {
+        soc = 350;
+        rem_cap = full_cap_100 * 7 / 20 ;
+        /* 4. Write RepSOC(06h)=90%; */
+        fg_write_register(client, SOCREP_REG, (u16)(0x23 << 8));
+        /* 5. Write MixSOC(0Dh)=90%; */
+        fg_write_register(client, SOCMIX_REG, (u16)(0x23 << 8));
+        /* 6. Write AVSOC(0Eh)=90%; */
+        fg_write_register(client, SOCAV_REG, (u16)(0x23 << 8));
+        fg_write_register(client, REMCAP_MIX_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_AV_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_REP_REG, (u16)rem_cap);
+    }
+    else if (average_vcell >= 3470 && soc < 100 && !charging) {
+        soc = 100;
+        rem_cap = full_cap_100 / 10;
+        /* 4. Write RepSOC(06h)=90%; */
+        fg_write_register(client, SOCREP_REG, (u16)(0x0A << 8));
+        /* 5. Write MixSOC(0Dh)=90%; */
+        fg_write_register(client, SOCMIX_REG, (u16)(0x0A << 8));
+        /* 6. Write AVSOC(0Eh)=90%; */
+        fg_write_register(client, SOCAV_REG, (u16)(0x0A << 8));
+        fg_write_register(client, REMCAP_MIX_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_AV_REG,(u16)rem_cap);
+        fg_write_register(client, REMCAP_REP_REG, (u16)rem_cap);
+    }
+    
+    if (( soc < ((rem_cap * 1000 / full_cap_100) - 1)) || (soc > ((rem_cap * 1000 / full_cap_100) + 1))){
+        soc = rem_cap * 1000 / full_cap_100;
+        dev_info(&client->dev, "%s: Adjust SOC to [%d]\n", __func__, soc);
+    }
+	/* use QRESIDUAL_00 + QRESIDUAL_10 for power_full 
+     * use QRESIDUAL_20 + QRESIDUAL_30 for power_remain
+     */
+	if (first_start == 0) { /* read back stored values at first boot*/
+        data_stored1 = fg_read_register(client, QRESIDUAL_00);
+        data_stored2 = fg_read_register(client, QRESIDUAL_10);
+        power_full = (data_stored1 << 16) | data_stored2;
+        
+        data_stored1 = fg_read_register(client, QRESIDUAL_20);
+        data_stored2 = fg_read_register(client, QRESIDUAL_30);
+        power_remain = (data_stored1 << 16) | data_stored2;
+        
+        first_start = 1;
+        
+        dev_info(&client->dev, "%s: First Boot up!!!!!!! \n", __func__);
+        dev_info(&client->dev, "%s: soc call from rem_cap and full_cap_100 = %d \n", __func__, soc);
+        /**** let set 3 % conpensate */
+        if ( power_remain <= (ratio * ((full_cap_100 * 3) / 100) )) {
+            power_remain = ratio * ((full_cap_100 * 3) / 100);
+        }
+        if (power_full <= (ratio * ((full_cap_100 / 10) * 8)) || power_full >= (ratio * ((full_cap_100 / 10) * 12)) ) {
+            power_full = ratio * full_cap_100;
+        }
+        if (power_remain > power_full) {
+            power_remain = power_full / 1000 * soc ;
+        }
+        
+        soc_cal_now = power_remain / (power_full/1000);
+
+        if (soc_cal_now < soc_cal_stored) {
+            if (soc_cal_stored > 0 && soc_cal_stored <= 1000) {
+                soc_cal_now = soc_cal_stored;
+            }
+            dev_info(&client->dev, "%s: Adjust SOC Remaining to %ld \n", __func__, soc_cal_now);
+            power_remain = (power_full / 1000) * soc_cal_now; 
+        }
+    
+        average_current =fg_read_avg_current(client, SEC_BATTEY_CURRENT_MA);
+
+        power = average_vcell * average_current / 1000;
+        dev_info(&client->dev, "%s: Charged Power [%ld mW].\n", __func__, power_full);
+        dev_info(&client->dev, "%s: Charged Power data(0x%08x)\n", __func__, (s32)power_full);
+        power_remain += power;
+        dev_info(&client->dev, "%s: Remaining Power [%ld mW].\n", __func__, power_remain);
+        dev_info(&client->dev, "%s: Remaining Power data(0x%08x)\n", __func__, (s32)power_remain);
+        soc_prev = soc;
+        
+        if ( (socmix & 0xFF00) > (0x6400)) {
+            /* Write if 0>MixSOC(0Dh)>100%; add 5%*/
+            fg_write_register(client, SOCMIX_REG, (u16)(((soc + 50) / 10) << 8));
+        }
+
+    } else {
+        average_current =fg_read_avg_current(client, SEC_BATTEY_CURRENT_MA);
+        dev_info(&client->dev, "%s: AVG_CURRENT(%dmA)\n", __func__, average_current);
+        power = average_vcell * average_current / 1000;
+
+        if ( power > 0) { // Charging
+            charging = 1;
+            time_avg_const = 45;
+            time_diff = 51;
+            dev_info(&client->dev, "%s: Charging Battery on going.\n", __func__);
+            if (data[0] != 0xA6){
+                data[0] = 0xA6;
+                fg_i2c_write(client, MAX17050_REG_FILTERCFG, data, 2);
+                dev_info(&client->dev, "%s: Change Time constant for average to 45s\n", __func__);
+            }
+            power = power * time_diff / time_avg_const; 
+            dev_info(&client->dev, "%s: AVR_POWER [%ld mW] in 45 sec. Read Back 51 sec.\n", __func__, power);
+        }else{ // Discharging
+            charging = 0;
+            time_avg_const = 90;
+            time_diff = 151;
+            dev_info(&client->dev, "%s: No enough enegy to Charge Battery.\n", __func__);
+            if (data[0] != 0xB7){
+                data[0] = 0xB7;
+                fg_i2c_write(client, MAX17050_REG_FILTERCFG, data, 2);
+                dev_info(&client->dev, "%s: Change Time constant for average to 90s\n", __func__);
+            }
+            power = power * time_diff / time_avg_const; 
+            dev_info(&client->dev, "%s: AVR_POWER [%ld mW] in 90 sec. Read Back 151 sec.\n", __func__, power);
+        }
+        if (soc < 1000 || average_current >= 205 ) { /*Stop charging when soc = 1000 and current < 200mA*/
+            power_remain += power;
+        }
+        dev_info(&client->dev, "%s: Charged Power [%ld mW].\n", __func__, power_full);
+        dev_info(&client->dev, "%s: Charged Power data(0x%08x)\n", __func__, (s32)power_full);
+        dev_info(&client->dev, "%s: Remaining Power [%ld mW].\n", __func__, power_remain);
+        dev_info(&client->dev, "%s: power_remain data(0x%08x)\n", __func__, (s32)power_remain);
+
+        soc_cal_now = power_remain / (power_full/1000);
+        
+        dev_info(&client->dev, "%s: SOC Remaining= %ld \n", __func__, soc_cal_now);
+        if (count_soc == test_count) /*update rem_cap every 151s on discharge , 51s on charging */
+        {
+            /* if soc from detected value less than Q-count calculated ; correct it when discharging*/
+            if ((soc < soc_cal_now) && !charging ){
+                /*** reduce with 100 on full-cap , and 10 on soc ,so in valid range for u16 */
+                rem_cap = (full_cap_100 / 100) * (soc_cal_now / 10) ;
+                soc = soc_cal_now;
+                dev_info(&client->dev, "%s: Adjust SOC to calculated [%d]\n", __func__, soc);
+            }
+            if (jsoc == 5) {
+                if (jsoc_cap - rem_cap > 5 * test_value) {
+                    rem_cap_prev = jsoc_cap - 5 * test_value;
+                    /* correction to prevent soc jump when discharge */
+                    fg_write_register(client, REMCAP_REP_REG, rem_cap_prev);
+                    dev_info(&client->dev, "%s: Adjust REMCAP_REP_REG to calculated [%d]\n", __func__, rem_cap_prev);
+                }
+                jsoc = 0;
+            } else {
+                if (rem_cap_prev - rem_cap > test_value) {
+                    rem_cap_prev = rem_cap_prev - test_value;
+                    /* correction to prevent soc jump when discharge */
+                    fg_write_register(client, REMCAP_REP_REG, rem_cap_prev);
+                    dev_info(&client->dev, "%s: Adjust REMCAP_REP_REG to calculated [%d]\n", __func__, rem_cap_prev);
+                } else {
+                    rem_cap_prev = rem_cap;
+                }
+            }
+            /********** SOCREP_REG  correction *******************/
+            /*reset counter*/
+            count_soc = 0;
+            if (jsoc == 0) {
+                jsoc_cap = rem_cap;
+            }
+            jsoc += 1;
+        }
+        /*set to 0.5% power*/
+        if (power_remain <= (ratio * (full_cap / 1000) * 15) || soc <= 15) {
+            power_full = ratio * full_cap_100; /** cannot set power_full <= 0 error may occur **/
+            power_remain = (power_full / 1000) * 15; /** cannot set power_full <= 0 error may occur **/
+            /* reset Capacity Remain */
+            if (soc <= 15){
+            fg_write_register(client, REMCAP_MIX_REG,(u16)((full_cap_100 / 1000) * soc));
+            fg_write_register(client, REMCAP_AV_REG,(u16)((full_cap_100 / 1000) * soc));
+            fg_write_register(client, FULLCAP_NOM_REG,(u16)((full_cap_100 / 1000) * soc));
+            /* 5. Write MixSOC(0Dh)=soc%; */
+            fg_write_register(client, SOCMIX_REG, (u16)((soc / 10) << 8));
+            /* 6. Write AVSOC(0Eh)=soc%; */
+            fg_write_register(client, SOCAV_REG, (u16)((soc / 10) << 8));
+            }
+        }
+        
+        if (charging){
+            if (power_full < power_remain){
+                power_full = (power_remain / soc) * 1000;
+                data_stored1 = power_full & 0xFFFF0000 >> 16;
+                data_stored2 = power_full & 0xFFFF;
+                
+                fg_write_register(client, QRESIDUAL_00, (u16)data_stored1);
+                fg_write_register(client, QRESIDUAL_10, (u16)data_stored2);
+            }
+            if ( soc >=995 ){
+                /* 5. Write MixSOC(0Dh)=100%; */
+                fg_write_register(client, SOCMIX_REG, (u16)(0x64 << 8));
+                /* 6. Write AVSOC(0Eh)=100%; */
+                fg_write_register(client, SOCAV_REG, (u16)(0x64 << 8));
+                fg_write_register(client, REMCAP_MIX_REG,(u16)((full_cap_100 / 1000) * soc));
+                fg_write_register(client, REMCAP_AV_REG,(u16)((full_cap_100 / 1000) * soc));
+                fg_write_register(client, FULLCAP_NOM_REG,(u16)((full_cap_100 / 1000) * soc));
+            }
+        }
+        
+        if (count_p == test_count2 ){ /** write data every 204 / 604 seconds for read back when start **/
+            if (soc >= 980 && soc >= soc_prev && charging){
+                power_full = power_remain;
+                
+                data_stored1 = power_full & 0xFFFF0000 >> 16;
+                data_stored2 = power_full & 0xFFFF;
+                
+                fg_write_register(client, QRESIDUAL_00, (u16)data_stored1);
+                fg_write_register(client, QRESIDUAL_10, (u16)data_stored2);
+            }
+            if ( average_vcell < 3480 ) {
+                power_remain = 5000;
+                soc = 1;
+            }
+            data_stored1 = power_remain & 0xFFFF0000 >> 16;
+            data_stored2 = power_remain & 0xFFFF;
+            
+            fg_write_register(client, QRESIDUAL_20, (u16)data_stored1);
+            fg_write_register(client, QRESIDUAL_30, (u16)data_stored2);
+            
+            /* USE DPACC_REG for calculated soc for q-count */
+            /*    soc_cal_stored  update */
+            fg_write_register(client, DPACC_REG, (u16)soc_cal_now);
+            
+            count_p = 0;
+        }
+        soc_prev = soc;
+    }
 }
 
 static void fg_periodic_read(struct i2c_client *client)
@@ -256,27 +1105,27 @@ static void fg_periodic_read(struct i2c_client *client)
 	str = kzalloc(sizeof(char)*1024, GFP_KERNEL);
 	if (!str)
 		return;
-#if defined(CONFIG_KLIMT) || defined(CONFIG_CHAGALL) || defined(CONFIG_N1A)
-	if((fg_read_register(client, 0x12) != fuelgauge->pdata->QRTable00)) {
-		if (fg_write_register(client, 0x12, (u16)fuelgauge->pdata->QRTable00) < 0) {
+#if defined(CONFIG_KLIMT) || defined(CONFIG_CHAGALL)
+	if((fg_read_register(client, QRESIDUAL_00) != fuelgauge->pdata->QRTable00)) {
+		if (fg_write_register(client, QRESIDUAL_00, (u16)fuelgauge->pdata->QRTable00) < 0) {
 			dev_err(&client->dev, "%s: Failed to write QRtable0 \n",
 				__func__);
 				}
 		}
-	if((fg_read_register(client, 0x22) != fuelgauge->pdata->QRTable10)) {
-		if (fg_write_register(client, 0x22, (u16)fuelgauge->pdata->QRTable10) < 0) {
+	if((fg_read_register(client, QRESIDUAL_10) != fuelgauge->pdata->QRTable10)) {
+		if (fg_write_register(client, QRESIDUAL_10, (u16)fuelgauge->pdata->QRTable10) < 0) {
 			dev_err(&client->dev, "%s: Failed to write QRtable10 \n",
 				__func__);
 				}
 		}
-	if((fg_read_register(client, 0x32) != fuelgauge->pdata->QRTable20)) {
-		if (fg_write_register(client, 0x32, (u16)fuelgauge->pdata->QRTable20) < 0) {
+	if((fg_read_register(client, QRESIDUAL_20) != fuelgauge->pdata->QRTable20)) {
+		if (fg_write_register(client, QRESIDUAL_20, (u16)fuelgauge->pdata->QRTable20) < 0) {
 			dev_err(&client->dev, "%s: Failed to write QRtable20 \n",
 				__func__);
 				}
 		}
-	if((fg_read_register(client, 0x42) != fuelgauge->pdata->QRTable30)) {
-		if (fg_write_register(client, 0x42, (u16)fuelgauge->pdata->QRTable30) < 0) {
+	if((fg_read_register(client, QRESIDUAL_30) != fuelgauge->pdata->QRTable30)) {
+		if (fg_write_register(client, QRESIDUAL_30, (u16)fuelgauge->pdata->QRTable30) < 0) {
 			dev_err(&client->dev, "%s: Failed to write QRtable30 \n",
 				__func__);
 				}
@@ -786,66 +1635,6 @@ static int fg_read_repcap(struct i2c_client *client)
 	return ret;
 }
 
-/* Capacity of Cell should monitor 2 values SOC now and Capacity remain*/
-static int fg_read_remain_cap_percent(struct i2c_client *client)
-{
-    struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
-    
-	int ret, soc, fullcap, remcap, cell_cap;
-    static int prev_soc,prev_soc_old,count;
-    
-    remcap = fg_read_repcap(client);//REMCAP_REP_REG (uVh) 
-    fullcap = fg_read_fullcap(client);// FULLCAP_REG (uVh)
-    cell_cap = get_battery_data(fuelgauge).Capacity;//Design Full Capacity
-    
-    if (fullcap < cell_cap) {
-        fullcap = cell_cap;
-        fg_write_register(client, FULLCAP_REG, (u16)(fullcap));
-    }
-/*
-    dev_info(&client->dev, "%s: prev_soc = %i\n", __func__, prev_soc);
-    dev_info(&client->dev, "%s:fg_read_repcap = %i\n", __func__, remcap);
-    dev_info(&client->dev, "%s:fg_read_fullcap = %i\n", __func__, fullcap);
-*/
-    ret = (10000 * remcap) / fullcap;
-    ret +=5;
-    ret /=10;
-
-//    dev_info(&client->dev, "%s:ret = %i\n", __func__, ret);
-
-    // SOCREP_REG (%)
-    soc = fg_read_soc(client); //this is in %
-//    dev_info(&client->dev, "%s: SOC = %i\n", __func__,soc);
-    count +=1;
-    /*** check if SOC or remain Capacity is greater ********/
-    if (ret > soc) {
-        soc = ret;
-    }
-    if ((prev_soc - soc) > 3){ 
-        /** let soc drop 0.3% max each read , if so do correction REMCAP_REP_REG*/
-        prev_soc -=3;
-        soc = prev_soc;
-        remcap = fullcap * soc;
-        remcap /=1000;
-        /* correction to prevent soc jump when discharge */
-		fg_write_register(client, REMCAP_REP_REG, (u16)(remcap));
-    } else {
-        prev_soc = soc;
-    }
-    if (count == 3){
-        /* if reading 3 times and soc drop more than 7 (0.7%) ,
-         * correct SOC Jump only 0.7%max for 3 reading
-         */
-        if ((prev_soc_old - prev_soc) > 7){
-            prev_soc = prev_soc_old - 7;
-        }
-        prev_soc_old = prev_soc;
-        count = 0;
-    }
-    dev_info(&client->dev, "%s: prev_soc = %i\n", __func__, prev_soc);
-    return soc;
-}
-
 static int fg_read_current(struct i2c_client *client, int unit)
 {
 	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
@@ -906,45 +1695,8 @@ static int fg_read_current(struct i2c_client *client, int unit)
 		/* Read max17050's all registers every 5 minute. */
 		fg_periodic_read(client);
 	}
-    //check and correct Remain Capacity if Jump*/
-    fg_read_remain_cap_percent(client);
-    //
+
 	return i_current;
-}
-
-static int fg_read_avg_current(struct i2c_client *client, int unit)
-{
-	u8  data2[2];
-	u32 temp, sign;
-	s32 avg_current;
-
-	if (fg_i2c_read(client, AVG_CURRENT_REG, data2, 2) < 0) {
-		dev_err(&client->dev, "%s: Failed to read AVERAGE CURRENT\n",
-			__func__);
-		return -1;
-	}
-
-	temp = ((data2[1]<<8) | data2[0]) & 0xFFFF;
-	if (temp & (0x1 << 15)) {
-		sign = NEGATIVE;
-		temp = (~temp & 0xFFFF) + 1;
-	} else
-		sign = POSITIVE;
-
-	/* 1.5625uV/0.01Ohm(Rsense) = 156.25uA */
-	switch (unit) {
-	case SEC_BATTEY_CURRENT_UA:
-		avg_current = temp * 15625 / 100;
-		break;
-	case SEC_BATTEY_CURRENT_MA:
-	default:
-		avg_current = temp * 15625 / 100000;
-	}
-
-	if (sign)
-		avg_current *= -1;
-
-	return avg_current;
 }
 
 int fg_reset_soc(struct i2c_client *client)
@@ -971,7 +1723,7 @@ int fg_reset_soc(struct i2c_client *client)
 		return 0;
 	}
 
-	fg_write_register(client, CYCLES_REG, 0);
+	// fg_write_register(client, CYCLES_REG, 0);
 
 	if (fg_i2c_read(client, MISCCFG_REG, data, 2) < 0) {
 		dev_err(&client->dev, "%s: Failed to read MiscCFG\n", __func__);
@@ -1006,7 +1758,7 @@ int fg_reset_soc(struct i2c_client *client)
      * with 5uV step
      * */
 	fg_write_register(client, DESIGNCAP_REG, get_battery_data(fuelgauge).Capacity);
-	fg_write_register(client, FULLCAP_REG, get_battery_data(fuelgauge).Capacity);
+	//fg_write_register(client, FULLCAP_REG, get_battery_data(fuelgauge).Capacity);
     
     data[0] = 0x00;
     data[1] = 0x00;
@@ -1040,6 +1792,22 @@ int fg_reset_soc(struct i2c_client *client)
 		data[1] = 0x02;
         fg_i2c_write(client, CONFIG_REG, data, 2);
     }
+    
+    /************** set time constant for average_current and average_vcell **/
+	if (fg_i2c_read(client, MAX17050_REG_FILTERCFG, data, 2) < 0) {
+		dev_err(&client->dev,
+			"%s: Failed to read STATUS_REG\n", __func__);
+		return 0;
+	}
+#if defined(CONFIG_N1A)
+    //data[0] = (data[0] & 0x80)+0x37;//V source
+    data[0] = (data[0] & 0x80)+0x26;//exynos5420 source
+#endif
+#if defined(CONFIG_V1A)
+    data[0] = (data[0] & 0x80)+0x26;
+#endif
+    fg_i2c_write(client, MAX17050_REG_FILTERCFG, data, 2);
+    
 /******************************************************************************************/
 	msleep(500);
 
@@ -1387,74 +2155,35 @@ void fg_fullcharged_compensation(struct i2c_client *client,
 			(u16)(new_fullcap_data));
 		fg_write_register(client, FULLCAP_REG,
 			(u16)(new_fullcap_data));
-	} else if (new_fullcap_data <
-		(get_battery_data(fuelgauge).Capacity * 90 / 100)) {
+	} else if (new_fullcap_data >
+		(get_battery_data(fuelgauge).Capacity * 95 / 100)) {
 		dev_info(&client->dev,
 			"%s: [Case 5] capacity = 0x%04x, NewFullCap = 0x%04x\n",
 			__func__, get_battery_data(fuelgauge).Capacity,
 			new_fullcap_data);
 
-		new_fullcap_data =
-			(get_battery_data(fuelgauge).Capacity * 90) / 100;
-
 		fg_write_register(client, REMCAP_REP_REG,
 			(u16)(new_fullcap_data));
-		fg_write_register(client, FULLCAP_REG,
-			(u16)(new_fullcap_data));
-	} else {
-	/* compare with previous capacity */
-		if (new_fullcap_data >
-			(fuelgauge->info.previous_fullcap * 110 / 100)) {
-			dev_info(&client->dev,
-				"%s: [Case 2] previous_fullcap = 0x%04x, NewFullCap = 0x%04x\n",
-				__func__, fuelgauge->info.previous_fullcap,
-				new_fullcap_data);
-
-			new_fullcap_data =
-				(fuelgauge->info.previous_fullcap * 110) / 100;
-
-			fg_write_register(client, REMCAP_REP_REG,
-				(u16)(new_fullcap_data));
-			fg_write_register(client, FULLCAP_REG,
-				(u16)(new_fullcap_data));
-		} else if (new_fullcap_data <
-			(fuelgauge->info.previous_fullcap * 90 / 100)) {
-			dev_info(&client->dev,
-				"%s: [Case 3] previous_fullcap = 0x%04x, NewFullCap = 0x%04x\n",
-				__func__, fuelgauge->info.previous_fullcap,
-				new_fullcap_data);
-
-			new_fullcap_data =
-				(fuelgauge->info.previous_fullcap * 90) / 100;
-
-			fg_write_register(client, REMCAP_REP_REG,
-				(u16)(new_fullcap_data));
-			fg_write_register(client, FULLCAP_REG,
-				(u16)(new_fullcap_data));
-		} else {
-			dev_info(&client->dev,
-				"%s: [Case 4] previous_fullcap = 0x%04x, NewFullCap = 0x%04x\n",
-				__func__, fuelgauge->info.previous_fullcap,
-				new_fullcap_data);
-		}
+        if (new_fullcap_data >= (get_battery_data(fuelgauge).Capacity)){
+            fg_write_register(client, FULLCAP_REG,
+                (u16)(new_fullcap_data));
+        }else{
+            fg_write_register(client, FULLCAP_REG,
+                (u16)(get_battery_data(fuelgauge).Capacity));
+        }
 	}
-    
-    if(new_fullcap_data >= get_battery_data(fuelgauge).Capacity * 90/100){
-	/* 4. Write RepSOC(06h)=100%; */
-	fg_write_register(client, SOCREP_REG, (u16)(0x64 << 8));
 
-	/* 5. Write MixSOC(0Dh)=100%; */
-	fg_write_register(client, SOCMIX_REG, (u16)(0x64 << 8));
+    if(new_fullcap_data >= get_battery_data(fuelgauge).Capacity){
+        /* 4. Write RepSOC(06h)=100%; */
+        fg_write_register(client, SOCREP_REG, (u16)(0x64 << 8));
 
-	/* 6. Write AVSOC(0Eh)=100%; */
-	fg_write_register(client, SOCAV_REG, (u16)(0x64 << 8));
+        /* 5. Write MixSOC(0Dh)=100%; */
+        fg_write_register(client, SOCMIX_REG, (u16)(0x64 << 8));
+
+        /* 6. Write AVSOC(0Eh)=100%; */
+        fg_write_register(client, SOCAV_REG, (u16)(0x64 << 8));
     }
     
-	/* if pre_update case, skip updating PrevFullCAP value. */
-	if (!pre_update)
-		fuelgauge->info.previous_fullcap =
-			fg_read_register(client, FULLCAP_REG);
-
 	dev_info(&client->dev,
 		"%s: (A) FullCap = 0x%04x, RemCap = 0x%04x\n", __func__,
 		fg_read_register(client, FULLCAP_REG),
@@ -1489,7 +2218,6 @@ void fg_check_vf_fullcap_range(struct i2c_client *client)
 
 		fg_write_register(client, DQACC_REG,
 			(u16)(new_vffullcap / 4));
-		fg_write_register(client, DPACC_REG, (u16)0x3200);
 	} else if (new_vffullcap <
 		(get_battery_data(fuelgauge).Capacity * 90 / 100)) {
 		dev_info(&client->dev,
@@ -1502,7 +2230,6 @@ void fg_check_vf_fullcap_range(struct i2c_client *client)
 
 		fg_write_register(client, DQACC_REG,
 			(u16)(new_vffullcap / 4));
-		fg_write_register(client, DPACC_REG, (u16)0x3200);
 	} else {
 	/* compare with previous capacity */
 		if (new_vffullcap >
@@ -1518,7 +2245,6 @@ void fg_check_vf_fullcap_range(struct i2c_client *client)
 
 			fg_write_register(client, DQACC_REG,
 				(u16)(new_vffullcap / 4));
-			fg_write_register(client, DPACC_REG, (u16)0x3200);
 		} else if (new_vffullcap <
 			(fuelgauge->info.previous_vffullcap * 90 / 100)) {
 			dev_info(&client->dev,
@@ -1531,7 +2257,6 @@ void fg_check_vf_fullcap_range(struct i2c_client *client)
 
 			fg_write_register(client, DQACC_REG,
 				(u16)(new_vffullcap / 4));
-			fg_write_register(client, DPACC_REG, (u16)0x3200);
 		} else {
 			dev_info(&client->dev,
 				"%s: [Case 4] previous_vffullcap = 0x%04x, NewVfFullCap = 0x%04x\n",
@@ -2097,7 +2822,20 @@ bool sec_hal_fg_init(struct i2c_client *client)
         fg_i2c_write(client, CONFIG_REG, data, 2);
         dev_info(&client->dev,"%s:SEC_BATTERY_THERMAL_SOURCE_FG\n",__func__);
     }
-
+    /************** set time constant for average_current and average_vcell **/
+	if (fg_i2c_read(client, MAX17050_REG_FILTERCFG, data, 2) < 0) {
+		dev_err(&client->dev,
+			"%s: Failed to read STATUS_REG\n", __func__);
+		return 0;
+	}
+#if defined(CONFIG_N1A)
+    //data[0] = (data[0] & 0x80)+0x37;
+    data[0] = (data[0] & 0x80)+0x26;
+#endif
+#if defined(CONFIG_V1A)
+    data[0] = (data[0] & 0x80)+0x26;
+#endif
+    fg_i2c_write(client, MAX17050_REG_FILTERCFG, data, 2);
 /****************************************************************************/
 
 	return true;

@@ -224,15 +224,11 @@ static int cpufreq_apply_cooling(struct cpufreq_cooling_device *cpufreq_device,
 	if (notify_table != NOTIFY_INVALID) {
 		event = CPUFREQ_COOLING_START;
 		maskPtr = notify_table->mask_val;
-#ifdef CONFIG_THERMAL_DEBUG
 		pr_info("[TMU] COOLING START: temp_level=%d, clip_max=%d\n",
 				notify_table->temp_level, notify_table->freq_clip_max);
-#endif
 	} else {
 		event = CPUFREQ_COOLING_STOP;
-#ifdef CONFIG_THERMAL_DEBUG
 		pr_info("[TMU] COOLING STOP\n");
-#endif
 	}
 
 	blocking_notifier_call_chain(&cputherm_state_notifier_list,

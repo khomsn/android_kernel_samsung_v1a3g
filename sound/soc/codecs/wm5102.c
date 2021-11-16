@@ -591,7 +591,7 @@ static int wm5102_sysclk_ev(struct snd_soc_dapm_widget *w,
 			    struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_codec *codec = w->codec;
-	struct arizona *arizona = dev_get_drvdata(codec->dev);
+	struct arizona *arizona = dev_get_drvdata(codec->dev->parent);
 	struct regmap *regmap = codec->control_data;
 	const struct reg_default *patch = NULL;
 	int i, patch_size;
@@ -833,8 +833,8 @@ SOC_ENUM("LHPF2 Mode", arizona_lhpf2_mode),
 SOC_ENUM("LHPF3 Mode", arizona_lhpf3_mode),
 SOC_ENUM("LHPF4 Mode", arizona_lhpf4_mode),
 
-SOC_ENUM("ISRC1 FSL", arizona_isrc_fsl[0]),
-SOC_ENUM("ISRC2 FSL", arizona_isrc_fsl[1]),
+SOC_VALUE_ENUM("ISRC1 FSL", arizona_isrc_fsl[0]),
+SOC_VALUE_ENUM("ISRC2 FSL", arizona_isrc_fsl[1]),
 
 ARIZONA_MIXER_CONTROLS("Mic", ARIZONA_MICMIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("Noise", ARIZONA_NOISEMIX_INPUT_1_SOURCE),
@@ -1670,21 +1670,21 @@ static int wm5102_codec_probe(struct snd_soc_codec *codec)
 	if (ret != 0)
 		return ret;
 
-	arizona_init_spk(codec);
-
-	ret = snd_soc_add_codec_controls(codec, wm_adsp_fw_controls, 2);
+	ret = snd_soc_add_codec_controls(codec, wm_adsp2_fw_controls, 2);
 	if (ret != 0)
 		return ret;
+
+	arizona_init_spk(codec);
 
 	snd_soc_dapm_disable_pin(&codec->dapm, "HAPTICS");
 	snd_soc_dapm_disable_pin(&codec->dapm, "CLAMP");
 
 	priv->core.arizona->dapm = &codec->dapm;
-/*
+
 #ifdef CONFIG_MFD_ARIZONA
 	arizona_control_init(codec);
 #endif
-*/
+
 	return 0;
 }
 

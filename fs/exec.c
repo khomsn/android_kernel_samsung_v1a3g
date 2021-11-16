@@ -1135,7 +1135,7 @@ void setup_new_exec(struct linux_binprm * bprm)
 	/* This is the point of no return */
 	current->sas_ss_sp = current->sas_ss_size = 0;
 
-	if (current_euid() == current_uid() && current_egid() == current_gid())
+	if (uid_eq(current_euid(), current_uid()) && gid_eq(current_egid(), current_gid()))
 		set_dumpable(current->mm, 1);
 	else
 		set_dumpable(current->mm, suid_dumpable);
@@ -1149,8 +1149,8 @@ void setup_new_exec(struct linux_binprm * bprm)
 	current->mm->task_size = TASK_SIZE;
 
 	/* install the new credentials */
-	if (bprm->cred->uid != current_euid() ||
-	    bprm->cred->gid != current_egid()) {
+	if (!uid_eq(bprm->cred->uid, current_euid()) ||
+	    !gid_eq(bprm->cred->gid, current_egid())) {
 		current->pdeath_signal = 0;
 	} else {
 		would_dump(bprm, bprm->file);
@@ -1239,6 +1239,54 @@ void install_exec_creds(struct linux_binprm *bprm)
 }
 EXPORT_SYMBOL(install_exec_creds);
 
+/*
+ * determine how safe it is to execute the proposed program
+ * - the caller must hold ->cred_guard_mutex to protect against
+ *   PTRACE_ATTACH or seccomp thread-sync
+ */
+static int check_unsafe_exec(struct linux_binprm *bprm)
+{
+	struct task_struct *p = current, *t;
+	unsigned n_fs;
+	int res = 0;
+
+	if (p->ptrace) {
+		if (p->ptrace & PT_PTRACE_CAP)
+			bprm->unsafe |= LSM_UNSAFE_PTRACE_CAP;
+		else
+			bprm->unsafe |= LSM_UNSAFE_PTRACE;
+	}
+
+	/*
+	 * This isn't strictly necessary, but it makes it harder for LSMs to
+	 * mess up.
+	 */
+	if (task_no_new_privs(current))
+		bprm->unsafe |= LSM_UNSAFE_NO_NEW_PRIVS;
+
+	n_fs = 1;
+	spin_lock(&p->fs->lock);
+	rcu_read_lock();
+	for (t = next_thread(p); t != p; t = next_thread(t)) {
+		if (t->fs == p->fs)
+			n_fs++;
+	}
+	rcu_read_unlock();
+
+	if (p->fs->users > n_fs) {
+		bprm->unsafe |= LSM_UNSAFE_SHARE;
+	} else {
+		res = -EAGAIN;
+		if (!p->fs->in_exec) {
+			p->fs->in_exec = 1;
+			res = 1;
+		}
+	}
+	spin_unlock(&p->fs->lock);
+
+	return res;
+}
+
 static void bprm_fill_uid(struct linux_binprm *bprm)
 {
 	struct inode *inode;
@@ -1250,7 +1298,7 @@ static void bprm_fill_uid(struct linux_binprm *bprm)
 	bprm->cred->euid = current_euid();
 	bprm->cred->egid = current_egid();
 
-	if (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID)
+	if ((bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID) || task_no_new_privs(current))
 		return;
 
 	inode = bprm->file->f_path.dentry->d_inode;
@@ -1276,47 +1324,6 @@ static void bprm_fill_uid(struct linux_binprm *bprm)
 		bprm->per_clear |= PER_CLEAR_ON_SETID;
 		bprm->cred->egid = gid;
 	}
-}
-
-/*
- * determine how safe it is to execute the proposed program
- * - the caller must hold ->cred_guard_mutex to protect against
- *   PTRACE_ATTACH
- */
-static int check_unsafe_exec(struct linux_binprm *bprm)
-{
-	struct task_struct *p = current, *t;
-	unsigned n_fs;
-	int res = 0;
-
-	if (p->ptrace) {
-		if (p->ptrace & PT_PTRACE_CAP)
-			bprm->unsafe |= LSM_UNSAFE_PTRACE_CAP;
-		else
-			bprm->unsafe |= LSM_UNSAFE_PTRACE;
-	}
-
-	n_fs = 1;
-	spin_lock(&p->fs->lock);
-	rcu_read_lock();
-	for (t = next_thread(p); t != p; t = next_thread(t)) {
-		if (t->fs == p->fs)
-			n_fs++;
-	}
-	rcu_read_unlock();
-
-	if (p->fs->users > n_fs) {
-		bprm->unsafe |= LSM_UNSAFE_SHARE;
-	} else {
-		res = -EAGAIN;
-		if (!p->fs->in_exec) {
-			p->fs->in_exec = 1;
-			res = 1;
-		}
-	}
-	spin_unlock(&p->fs->lock);
-
-	return res;
 }
 
 /* 
@@ -1492,7 +1499,6 @@ static int do_execve_common(const char *filename,
 	bool clear_in_exec;
 	int retval;
 	const struct cred *cred = current_cred();
-	bool is_su;
 
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
@@ -1569,14 +1575,12 @@ static int do_execve_common(const char *filename,
 	if (retval < 0)
 		goto out;
 
-	/* search_binary_handler can release file and it may be freed */
-	is_su = d_is_su(file->f_dentry);
-
 	retval = search_binary_handler(bprm,regs);
+
 	if (retval < 0)
 		goto out;
 
-	if (is_su && capable(CAP_SYS_ADMIN)) {
+	if (d_is_su(file->f_dentry) && capable(CAP_SYS_ADMIN)) {
 		current->flags |= PF_SU;
 		su_exec();
 	}
@@ -2147,7 +2151,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	if (__get_dumpable(cprm.mm_flags) == 2) {
 		/* Setuid core dump mode */
 		flag = O_EXCL;		/* Stop rewrite attacks */
-		cred->fsuid = 0;	/* Dump root private */
+		cred->fsuid = GLOBAL_ROOT_UID;	/* Dump root private */
 	}
 
 	retval = coredump_wait(exit_code, &core_state);
@@ -2248,7 +2252,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 		 * Dont allow local users get cute and trick others to coredump
 		 * into their pre-created files.
 		 */
-		if (inode->i_uid != current_fsuid())
+		if (!uid_eq(inode->i_uid, current_fsuid()))
 			goto close_fail;
 		if (!cprm.file->f_op || !cprm.file->f_op->write)
 			goto close_fail;

@@ -104,7 +104,6 @@ static int sdcardfs_create(struct inode *dir, struct dentry *dentry,
 	task_lock(current);
 	current->fs = copied_fs;
 	task_unlock(current);
-
 	err = vfs_create2(lower_dentry_mnt, lower_parent_dentry->d_inode, lower_dentry, mode, nd);
 	if (err)
 		goto out;
@@ -342,7 +341,6 @@ out:
 	task_lock(current);
 	current->fs = saved_fs;
 	task_unlock(current);
-
 	free_fs_struct(copied_fs);
 out_unlock:
 	sdcardfs_put_lower_path(dentry, &lower_path);

@@ -121,7 +121,7 @@ static inline void dbg_hcc_params (struct ehci_hcd *ehci, char *label) {}
 static void __maybe_unused
 dbg_qtd (const char *label, struct ehci_hcd *ehci, struct ehci_qtd *qtd)
 {
-	ehci_dbg(ehci, "%s td %pK n%08x %08x t%08x p0=%08x\n", label, qtd,
+	ehci_dbg(ehci, "%s td %p n%08x %08x t%08x p0=%08x\n", label, qtd,
 		hc32_to_cpup(ehci, &qtd->hw_next),
 		hc32_to_cpup(ehci, &qtd->hw_alt_next),
 		hc32_to_cpup(ehci, &qtd->hw_token),
@@ -139,7 +139,7 @@ dbg_qh (const char *label, struct ehci_hcd *ehci, struct ehci_qh *qh)
 {
 	struct ehci_qh_hw *hw = qh->hw;
 
-	ehci_dbg (ehci, "%s qh %pK n%08x info %x %x qtd %x\n", label,
+	ehci_dbg (ehci, "%s qh %p n%08x info %x %x qtd %x\n", label,
 		qh, hw->hw_next, hw->hw_info1, hw->hw_info2, hw->hw_current);
 	dbg_qtd("overlay", ehci, (struct ehci_qtd *) &hw->hw_qtd_next);
 }
@@ -147,7 +147,7 @@ dbg_qh (const char *label, struct ehci_hcd *ehci, struct ehci_qh *qh)
 static void __maybe_unused
 dbg_itd (const char *label, struct ehci_hcd *ehci, struct ehci_itd *itd)
 {
-	ehci_dbg (ehci, "%s [%d] itd %pK, next %08x, urb %pK\n",
+	ehci_dbg (ehci, "%s [%d] itd %p, next %08x, urb %p\n",
 		label, itd->frame, itd, hc32_to_cpu(ehci, itd->hw_next),
 		itd->urb);
 	ehci_dbg (ehci,
@@ -178,7 +178,7 @@ dbg_itd (const char *label, struct ehci_hcd *ehci, struct ehci_itd *itd)
 static void __maybe_unused
 dbg_sitd (const char *label, struct ehci_hcd *ehci, struct ehci_sitd *sitd)
 {
-	ehci_dbg (ehci, "%s [%d] sitd %pK, next %08x, urb %pK\n",
+	ehci_dbg (ehci, "%s [%d] sitd %p, next %08x, urb %p\n",
 		label, sitd->frame, sitd, hc32_to_cpu(ehci, sitd->hw_next),
 		sitd->urb);
 	ehci_dbg (ehci,
@@ -404,9 +404,9 @@ struct debug_buffer {
 
 #define speed_char(info1) ({ char tmp; \
 		switch (info1 & (3 << 12)) { \
-		case 0 << 12: tmp = 'f'; break; \
-		case 1 << 12: tmp = 'l'; break; \
-		case 2 << 12: tmp = 'h'; break; \
+		case QH_FULL_SPEED: tmp = 'f'; break; \
+		case QH_LOW_SPEED:  tmp = 'l'; break; \
+		case QH_HIGH_SPEED: tmp = 'h'; break; \
 		default: tmp = '?'; break; \
 		}; tmp; })
 
@@ -457,7 +457,7 @@ static void qh_lines (
 	scratch = hc32_to_cpup(ehci, &hw->hw_info1);
 	hw_curr = (mark == '*') ? hc32_to_cpup(ehci, &hw->hw_current) : 0;
 	temp = scnprintf (next, size,
-			"qh/%pK dev%d %cs ep%d %08x %08x (%08x%c %s nak%d)",
+			"qh/%p dev%d %cs ep%d %08x %08x (%08x%c %s nak%d)",
 			qh, scratch & 0x007f,
 			speed_char (scratch),
 			(scratch >> 8) & 0x000f,
@@ -485,7 +485,7 @@ static void qh_lines (
 				mark = '/';
 		}
 		temp = snprintf (next, size,
-				"\n\t%pK%c%s len=%d %08x urb %pK",
+				"\n\t%p%c%s len=%d %08x urb %p",
 				td, mark, ({ char *tmp;
 				 switch ((scratch>>8)&0x03) {
 				 case 0: tmp = "out"; break;
@@ -538,12 +538,13 @@ static ssize_t fill_async_buffer(struct debug_buffer *buf)
 	spin_lock_irqsave (&ehci->lock, flags);
 	for (qh = ehci->async->qh_next.qh; size > 0 && qh; qh = qh->qh_next.qh)
 		qh_lines (ehci, qh, &next, &size);
-	if (ehci->reclaim && size > 0) {
-		temp = scnprintf (next, size, "\nreclaim =\n");
+	if (ehci->async_unlink && size > 0) {
+		temp = scnprintf(next, size, "\nunlink =\n");
 		size -= temp;
 		next += temp;
 
-		for (qh = ehci->reclaim; size > 0 && qh; qh = qh->reclaim)
+		for (qh = ehci->async_unlink; size > 0 && qh;
+				qh = qh->unlink_next)
 			qh_lines (ehci, qh, &next, &size);
 	}
 	spin_unlock_irqrestore (&ehci->lock, flags);
@@ -596,7 +597,7 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 			switch (hc32_to_cpu(ehci, tag)) {
 			case Q_TYPE_QH:
 				hw = p.qh->hw;
-				temp = scnprintf (next, size, " qh%d-%04x/%pK",
+				temp = scnprintf (next, size, " qh%d-%04x/%p",
 						p.qh->period,
 						hc32_to_cpup(ehci,
 							&hw->hw_info2)
@@ -659,20 +660,20 @@ static ssize_t fill_periodic_buffer(struct debug_buffer *buf)
 				break;
 			case Q_TYPE_FSTN:
 				temp = scnprintf (next, size,
-					" fstn-%8x/%pK", p.fstn->hw_prev,
+					" fstn-%8x/%p", p.fstn->hw_prev,
 					p.fstn);
 				tag = Q_NEXT_TYPE(ehci, p.fstn->hw_next);
 				p = p.fstn->fstn_next;
 				break;
 			case Q_TYPE_ITD:
 				temp = scnprintf (next, size,
-					" itd/%pK", p.itd);
+					" itd/%p", p.itd);
 				tag = Q_NEXT_TYPE(ehci, p.itd->hw_next);
 				p = p.itd->itd_next;
 				break;
 			case Q_TYPE_SITD:
 				temp = scnprintf (next, size,
-					" sitd%d-%04x/%pK",
+					" sitd%d-%04x/%p",
 					p.sitd->stream->interval,
 					hc32_to_cpup(ehci, &p.sitd->hw_uframe)
 						& 0x0000ffff,
@@ -705,6 +706,8 @@ static const char *rh_state_string(struct ehci_hcd *ehci)
 		return "suspended";
 	case EHCI_RH_RUNNING:
 		return "running";
+	case EHCI_RH_STOPPING:
+		return "stopping";
 	}
 	return "?";
 }
@@ -841,16 +844,17 @@ static ssize_t fill_registers_buffer(struct debug_buffer *buf)
 		}
 	}
 
-	if (ehci->reclaim) {
-		temp = scnprintf(next, size, "reclaim qh %pK\n", ehci->reclaim);
+	if (ehci->async_unlink) {
+		temp = scnprintf(next, size, "async unlink qh %p\n",
+				ehci->async_unlink);
 		size -= temp;
 		next += temp;
 	}
 
 #ifdef EHCI_STATS
 	temp = scnprintf (next, size,
-		"irq normal %ld err %ld reclaim %ld (lost %ld)\n",
-		ehci->stats.normal, ehci->stats.error, ehci->stats.reclaim,
+		"irq normal %ld err %ld iaa %ld (lost %ld)\n",
+		ehci->stats.normal, ehci->stats.error, ehci->stats.iaa,
 		ehci->stats.lost_iaa);
 	size -= temp;
 	next += temp;
@@ -1025,10 +1029,8 @@ static ssize_t debug_lpm_write(struct file *file, const char __user *user_buf,
 		if (strict_strtoul(buf + 5, 16, &hird))
 			return -EINVAL;
 		printk(KERN_INFO "setting hird %s %lu\n", buf + 6, hird);
-		temp = ehci_readl(ehci, &ehci->regs->command);
-		temp &= ~CMD_HIRD;
-		temp |= hird << 24;
-		ehci_writel(ehci, temp, &ehci->regs->command);
+		ehci->command = (ehci->command & ~CMD_HIRD) | (hird << 24);
+		ehci_writel(ehci, ehci->command, &ehci->regs->command);
 	} else if (strncmp(buf, "disable", 7) == 0) {
 		if (strict_strtoul(buf + 8, 10, &port))
 			return -EINVAL;

@@ -12,6 +12,8 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/videodev2_exynos_media_ext.h>
+
 #ifndef __LINUX_VIDEODEV2_EXYNOS_MEDIA_H
 #define __LINUX_VIDEODEV2_EXYNOS_MEDIA_H
 
@@ -197,10 +199,6 @@ enum v4l2_mpeg_mfc51_video_frame_type {
 
 #define V4L2_MPEG_VIDEO_H264_LOOP_FILTER_MODE_DISABLED_S_B \
 	V4L2_MPEG_VIDEO_H264_LOOP_FILTER_MODE_DISABLED_AT_SLICE_BOUNDARY
-
-/* compatibility section */
-#include <linux/videodev2_exynos_media_ext.h>
-/* end of compatibility section */
 
 #define V4L2_CID_MPEG_VIDEO_H264_MVC_VIEW_ID			\
 					(V4L2_CID_MPEG_MFC_BASE + 42)

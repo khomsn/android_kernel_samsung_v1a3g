@@ -23,7 +23,6 @@
 #include <linux/atomic.h>
 #include <linux/mutex.h>
 #include <linux/pm_qos.h>
-#include <linux/dma-buf.h>
 #include <plat/fimg2d.h>
 #ifdef CCI_SNOOP
 #include <plat/cci.h>
@@ -76,8 +75,6 @@ enum debug_level {
 
 #endif /* __KERNEL__ */
 
-#define FIMG2D_MAX_PLANES	2
-
 /* ioctl commands */
 #define FIMG2D_IOCTL_MAGIC	'F'
 #define FIMG2D_BITBLT_BLIT	_IOWR(FIMG2D_IOCTL_MAGIC, 0, struct fimg2d_blit)
@@ -119,12 +116,18 @@ enum blit_sync {
 };
 
 /**
- * @ADDR_NONE: no image/solid color
- * @ADDR_DMA_BUF: dma-buf fds
+ * @ADDR_PHYS: physical address
+ * @ADDR_USER: user virtual address (physically Non-contiguous)
+ * @ADDR_USER_CONTIG: user virtual address (physically Contiguous)
+ * @ADDR_DEVICE: specific device virtual address
  */
 enum addr_space {
-	ADDR_NONE = 0,
-	ADDR_DMA_BUF,
+	ADDR_NONE,
+	ADDR_PHYS,
+	ADDR_KERN,
+	ADDR_USER,
+	ADDR_USER_CONTIG,
+	ADDR_DEVICE,
 };
 
 /**
@@ -306,19 +309,29 @@ enum image_object {
 #define ITMP			IMAGE_TMP
 #define IDST			IMAGE_DST
 
+/**
+ * @size: dma size of image
+ * @cached: cached dma size of image
+ */
 struct fimg2d_dma {
-	struct dma_buf *dma_buf;
-	struct dma_buf_attachment *attachment;
-	struct sg_table *sg_table;
-	dma_addr_t dma_addr;
-	enum dma_data_direction direction;
+	unsigned long addr;
+	size_t size;
+	size_t cached;
+};
+
+struct fimg2d_dma_group {
+	struct fimg2d_dma base;
+	struct fimg2d_dma plane2;
 };
 
 #endif /* __KERNEL__ */
 
+/**
+ * @start: start address or unique id of image
+ */
 struct fimg2d_addr {
 	enum addr_space type;
-	int fd[FIMG2D_MAX_PLANES];
+	unsigned long start;
 };
 
 struct fimg2d_rect {
@@ -340,7 +353,7 @@ struct fimg2d_scale {
 };
 
 struct fimg2d_clip {
-	__u32 enable;
+	bool enable;
 	int x1;
 	int y1;
 	int x2;	/* x1 + width */
@@ -364,6 +377,7 @@ struct fimg2d_bluscr {
 /**
  * @plane2: address info for CbCr in YCbCr 2plane mode
  * @rect: crop/clip rect
+ * @need_cacheopr: true if cache coherency is required
  */
 struct fimg2d_image {
 	int width;
@@ -372,7 +386,9 @@ struct fimg2d_image {
 	enum pixel_order order;
 	enum color_format fmt;
 	struct fimg2d_addr addr;
+	struct fimg2d_addr plane2;
 	struct fimg2d_rect rect;
+	bool need_cacheopr;
 };
 
 /**
@@ -391,7 +407,7 @@ struct fimg2d_image {
 struct fimg2d_param {
 	unsigned long solid_color;
 	unsigned char g_alpha;
-	__u32 dither;
+	bool dither;
 	enum rotation rotate;
 	enum premultiplied premult;
 	struct fimg2d_scale scaling;
@@ -424,13 +440,31 @@ struct fimg2d_blit {
 
 #ifdef __KERNEL__
 
+enum perf_desc {
+	PERF_CACHE = 0,
+	PERF_SFR,
+	PERF_BLIT,
+	PERF_TOTAL,
+	PERF_END
+};
+#define MAX_PERF_DESCS		PERF_END
+
+struct fimg2d_perf {
+	unsigned int seq_no;
+	struct timeval start;
+	struct timeval end;
+};
+
 /**
+ * @pgd: base address of arm mmu pagetable
  * @ncmd: request count in blit command queue
  * @wait_q: conext wait queue head
 */
 struct fimg2d_context {
+	struct mm_struct *mm;
 	atomic_t ncmd;
 	wait_queue_head_t wait_q;
+	struct fimg2d_perf perf[MAX_PERF_DESCS];
 	void *vma_lock;
 };
 
@@ -454,7 +488,8 @@ struct fimg2d_context {
 struct fimg2d_bltcmd {
 	struct fimg2d_blit blt;
 	struct fimg2d_image image[MAX_IMAGES];
-	struct fimg2d_dma dma[MAX_IMAGES][FIMG2D_MAX_PLANES];
+	size_t dma_all;
+	struct fimg2d_dma_group dma[MAX_IMAGES];
 	struct fimg2d_context *ctx;
 	struct list_head node;
 };
@@ -508,6 +543,23 @@ struct fimg2d_control {
 int fimg2d_register_ops(struct fimg2d_control *ctrl);
 int fimg2d_ip_version_is(void);
 int bit_per_pixel(struct fimg2d_image *img, int plane);
+
+static inline int width2bytes(int width, int bpp)
+{
+	switch (bpp) {
+	case 32:
+	case 24:
+	case 16:
+	case 8:
+		return (width * bpp) >> 3;
+	case 1:
+		return (width + 7) >> 3;
+	case 4:
+		return (width + 1) >> 1;
+	default:
+		return 0;
+	}
+}
 
 #ifdef BLIT_WORKQUE
 #define g2d_lock(x)		do {} while (0)

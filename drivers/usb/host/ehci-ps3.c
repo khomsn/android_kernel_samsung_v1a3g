@@ -55,27 +55,11 @@ static int ps3_ehci_hc_reset(struct usb_hcd *hcd)
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 
 	ehci->big_endian_mmio = 1;
-
 	ehci->caps = hcd->regs;
-	ehci->regs = hcd->regs + HC_LENGTH(ehci, ehci_readl(ehci,
-		&ehci->caps->hc_capbase));
 
-	dbg_hcs_params(ehci, "reset");
-	dbg_hcc_params(ehci, "reset");
-
-	ehci->hcs_params = ehci_readl(ehci, &ehci->caps->hcs_params);
-
-	result = ehci_halt(ehci);
-
+	result = ehci_setup(hcd);
 	if (result)
 		return result;
-
-	result = ehci_init(hcd);
-
-	if (result)
-		return result;
-
-	ehci_reset(ehci);
 
 	ps3_ehci_setup_insnreg(ehci);
 
@@ -232,7 +216,7 @@ static int ps3_ehci_remove(struct ps3_system_bus_device *dev)
 
 	BUG_ON(!hcd);
 
-	dev_dbg(&dev->core, "%s:%d: regs %pK\n", __func__, __LINE__, hcd->regs);
+	dev_dbg(&dev->core, "%s:%d: regs %p\n", __func__, __LINE__, hcd->regs);
 	dev_dbg(&dev->core, "%s:%d: irq %u\n", __func__, __LINE__, hcd->irq);
 
 	tmp = hcd->irq;

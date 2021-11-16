@@ -18,7 +18,42 @@
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/usb/composite.h>
 
+/**
+ * usb_find_descriptor_fillbuf - fill buffer with the requested descriptor
+ * @buf: Buffer to be filled
+ * @buflen: Size of buf
+ * @src: Array of descriptor pointers, terminated by null pointer.
+ * @desc_type: bDescriptorType field of the requested descriptor.
+ *
+ * Copies the requested descriptor into the buffer, returning the length
+ * or a negative error code if it is not found or can't be copied.  Useful
+ * when DT_OTG descriptor is requested.
+ */
+int
+usb_find_descriptor_fillbuf(void *buf, unsigned buflen,
+		const struct usb_descriptor_header **src, u8 desc_type)
+{
+	if (!src)
+		return -EINVAL;
+
+	for (; NULL != *src; src++) {
+		unsigned len;
+
+		if ((*src)->bDescriptorType != desc_type)
+			continue;
+
+		len = (*src)->bLength;
+		if (len > buflen)
+			return -EINVAL;
+
+		memcpy(buf, *src, len);
+		return len;
+	}
+
+	return -ENOENT;
+}
 
 /**
  * usb_descriptor_fillbuf - fill buffer with descriptors
@@ -155,4 +190,41 @@ usb_copy_descriptors(struct usb_descriptor_header **src)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(usb_copy_descriptors);
 
+int usb_assign_descriptors(struct usb_function *f,
+		struct usb_descriptor_header **fs,
+		struct usb_descriptor_header **hs,
+		struct usb_descriptor_header **ss)
+{
+	struct usb_gadget *g = f->config->cdev->gadget;
+
+	if (fs) {
+		f->fs_descriptors = usb_copy_descriptors(fs);
+		if (!f->fs_descriptors)
+			goto err;
+	}
+	if (hs && gadget_is_dualspeed(g)) {
+		f->hs_descriptors = usb_copy_descriptors(hs);
+		if (!f->hs_descriptors)
+			goto err;
+	}
+	if (ss && gadget_is_superspeed(g)) {
+		f->ss_descriptors = usb_copy_descriptors(ss);
+		if (!f->ss_descriptors)
+			goto err;
+	}
+	return 0;
+err:
+	usb_free_all_descriptors(f);
+	return -ENOMEM;
+}
+EXPORT_SYMBOL_GPL(usb_assign_descriptors);
+
+void usb_free_all_descriptors(struct usb_function *f)
+{
+	usb_free_descriptors(f->fs_descriptors);
+	usb_free_descriptors(f->hs_descriptors);
+	usb_free_descriptors(f->ss_descriptors);
+}
+EXPORT_SYMBOL_GPL(usb_free_all_descriptors);

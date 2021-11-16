@@ -108,8 +108,6 @@ static struct usb_device_id btusb_table[] = {
 	{ USB_DEVICE(0x0c10, 0x0000) },
 
 	/* Broadcom BCM20702A0 */
-	{ USB_DEVICE(0x0b05, 0x17b5) },
-	{ USB_DEVICE(0x04ca, 0x2003) },
 	{ USB_DEVICE(0x0489, 0xe042) },
 	{ USB_DEVICE(0x04ca, 0x2003) },
 	{ USB_DEVICE(0x0b05, 0x17b5) },
@@ -964,22 +962,6 @@ static void btusb_waker(struct work_struct *work)
 	usb_autopm_put_interface(data->intf);
 }
 
-static int btusb_setup_bcm92035(struct hci_dev *hdev)
-{
-	struct sk_buff *skb;
-	u8 val = 0x00;
-
-	BT_DBG("%s", hdev->name);
-
-	skb = __hci_cmd_sync(hdev, 0xfc3b, 1, &val, HCI_INIT_TIMEOUT);
-	if (IS_ERR(skb))
-		BT_ERR("BCM92035 command failed (%ld)", -PTR_ERR(skb));
-	else
-		kfree_skb(skb);
-
-	return 0;
-}
-
 static int btusb_probe(struct usb_interface *intf,
 				const struct usb_device_id *id)
 {
@@ -1080,14 +1062,11 @@ static int btusb_probe(struct usb_interface *intf,
 
 	SET_HCIDEV_DEV(hdev, &intf->dev);
 
-	hdev->open   = btusb_open;
-	hdev->close  = btusb_close;
-	hdev->flush  = btusb_flush;
-	hdev->send   = btusb_send_frame;
-	hdev->notify = btusb_notify;
-
-	if (id->driver_info & BTUSB_BCM92035)
-		hdev->setup = btusb_setup_bcm92035;
+	hdev->open     = btusb_open;
+	hdev->close    = btusb_close;
+	hdev->flush    = btusb_flush;
+	hdev->send     = btusb_send_frame;
+	hdev->notify   = btusb_notify;
 
 	if (id->driver_info & BTUSB_INTEL_BOOT)
 		set_bit(HCI_QUIRK_RAW_DEVICE, &hdev->quirks);
@@ -1127,6 +1106,17 @@ static int btusb_probe(struct usb_interface *intf,
 			set_bit(HCI_QUIRK_RAW_DEVICE, &hdev->quirks);
 
 		data->isoc = NULL;
+	}
+
+	if (id->driver_info & BTUSB_BCM92035) {
+		unsigned char cmd[] = { 0x3b, 0xfc, 0x01, 0x00 };
+		struct sk_buff *skb;
+
+		skb = bt_skb_alloc(sizeof(cmd), GFP_KERNEL);
+		if (skb) {
+			memcpy(skb_put(skb, sizeof(cmd)), cmd, sizeof(cmd));
+			skb_queue_tail(&hdev->driver_init, skb);
+		}
 	}
 
 	if (data->isoc) {

@@ -186,13 +186,13 @@ clear_retry:
 				ret);
 		return IRQ_NONE;
 	}
-	pr_debug("%s: interrupt source(0x%02x)\n", __func__, irq_src);
+	pr_info("%s: interrupt source(0x%02x)\n", __func__, irq_src);
 
 	if (irq_src & MAX77803_IRQSRC_CHG) {
 		/* CHG_INT */
 		ret = max77803_read_reg(max77803->i2c, MAX77803_CHG_REG_CHG_INT,
 				&irq_reg[CHG_INT]);
-		pr_debug("%s: charger interrupt(0x%02x)\n",
+		pr_info("%s: charger interrupt(0x%02x)\n",
 				__func__, irq_reg[CHG_INT]);
 		/* mask chgin to prevent chgin infinite interrupt
 		 * chgin is unmasked chgin isr
@@ -213,7 +213,7 @@ clear_retry:
 		ret = max77803_read_reg(max77803->i2c,
 				MAX77803_PMIC_REG_TOPSYS_INT,
 				&irq_reg[TOPSYS_INT]);
-		pr_debug("%s: topsys interrupt(0x%02x)\n",
+		pr_info("%s: topsys interrupt(0x%02x)\n",
 				__func__, irq_reg[TOPSYS_INT]);
 	}
 
@@ -221,7 +221,7 @@ clear_retry:
 		/* LED_INT */
 		ret = max77803_read_reg(max77803->i2c,
 				MAX77803_LED_REG_FLASH_INT, &irq_reg[LED_INT]);
-		pr_debug("%s: led interrupt(0x%02x)\n",
+		pr_info("%s: led interrupt(0x%02x)\n",
 				__func__, irq_reg[LED_INT]);
 	}
 
@@ -235,7 +235,7 @@ clear_retry:
 		for (i = MUIC_INT1; i < MAX77803_IRQ_GROUP_NR; i++)
 			irq_reg[i] |= tmp_irq_reg[i];
 
-		pr_debug("%s: muic interrupt(0x%02x, 0x%02x, 0x%02x)\n",
+		pr_info("%s: muic interrupt(0x%02x, 0x%02x, 0x%02x)\n",
 			__func__, irq_reg[MUIC_INT1],
 			irq_reg[MUIC_INT2], irq_reg[MUIC_INT3]);
 	}

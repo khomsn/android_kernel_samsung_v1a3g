@@ -1590,7 +1590,7 @@ static struct platform_device *smdk5250_devices[] __initdata = {
 	&s3c64xx_device_spi2,
 	&exynos_bus_mif_devfreq,
 	&exynos_bus_int_devfreq,
-#if defined(CONFIG_MALI_T6XX) || defined(CONFIG_MALI_T6XX_R7P0)
+#ifdef CONFIG_MALI_T6XX
 	&exynos5_device_g3d,
 #endif
 };

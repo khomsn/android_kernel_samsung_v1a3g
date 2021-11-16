@@ -746,25 +746,16 @@ void s5p_mfc_enc_calc_src_size(struct s5p_mfc_ctx *ctx)
 		set_linear_stride_size(ctx, ctx->src_fmt);
 }
 
-#define CPB_GAP				65
-#define set_strm_size_max(cpb_max)	((cpb_max) - CPB_GAP)
-
 /* Set registers for decoding stream buffer */
 int s5p_mfc_set_dec_stream_buffer(struct s5p_mfc_ctx *ctx, dma_addr_t buf_addr,
 		  unsigned int start_num_byte, unsigned int strm_size)
 {
 	struct s5p_mfc_dev *dev;
 	struct s5p_mfc_buf_size *buf_size;
-	struct s5p_mfc_dec *dec;
 
 	mfc_debug_enter();
 	if (!ctx) {
 		mfc_err("no mfc context to run\n");
-		return -EINVAL;
-	}
-	dec = ctx->dec_priv;
-	if (!dec) {
-		mfc_err("no mfc decoder to run\n");
 		return -EINVAL;
 	}
 	dev = ctx->dev;
@@ -773,11 +764,6 @@ int s5p_mfc_set_dec_stream_buffer(struct s5p_mfc_ctx *ctx, dma_addr_t buf_addr,
 		return -EINVAL;
 	}
 	buf_size = dev->variant->buf_size;
-	if (strm_size >= dec->src_buf_size) {
-		mfc_info("Decrease strm_size : %d, gap : %d\n",
-					strm_size, CPB_GAP);
-		strm_size = set_strm_size_max(dec->src_buf_size);
-	}
 	mfc_debug(2, "inst_no: %d, buf_addr: 0x%08x, buf_size: 0x"
 		"%08x (%d)\n",  ctx->inst_no, buf_addr, strm_size, strm_size);
 	WRITEL(strm_size, S5P_FIMV_D_STREAM_DATA_SIZE);
@@ -2845,8 +2831,6 @@ void s5p_mfc_try_run(struct s5p_mfc_dev *dev)
 		return;
 	}
 	spin_unlock_irq(&dev->condlock);
-	if (ctx->state == MFCINST_RUNNING)
-		s5p_mfc_clean_ctx_int_flags(ctx);
 
 	mfc_debug(1, "New context: %d\n", new_ctx);
 	mfc_debug(1, "Seting new context to %p\n", ctx);

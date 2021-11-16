@@ -48,6 +48,9 @@ int sysctl_tcp_retrans_collapse __read_mostly = 1;
  */
 int sysctl_tcp_workaround_signed_windows __read_mostly = 0;
 
+/* Default TSQ limit of two TSO segments */
+int sysctl_tcp_limit_output_bytes __read_mostly = 131072;
+
 /* This limits the percentage of the congestion window which we
  * will allow a single TSO frame to consume.  Building TSO frames
  * which are too large can cause TCP streams to be bursty.
@@ -64,6 +67,8 @@ int sysctl_tcp_slow_start_after_idle __read_mostly = 1;
 int sysctl_tcp_cookie_size __read_mostly = 0; /* TCP_COOKIE_MAX */
 EXPORT_SYMBOL_GPL(sysctl_tcp_cookie_size);
 
+static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
+			   int push_one, gfp_t gfp);
 
 /* Account for new data that has been sent to the network. */
 static void tcp_event_new_data_sent(struct sock *sk, const struct sk_buff *skb)
@@ -246,9 +251,6 @@ void tcp_select_initial_window(int __space, __u32 mss,
 			*rcv_wnd = min(*rcv_wnd, init_cwnd * mss);
 	}
 
-	/* Lock the initial TCP window size to 64K*/
-	*rcv_wnd = 64240;
-
 	/* Set the clamp no higher than max representable value */
 	(*window_clamp) = min(65535U << (*rcv_wscale), *window_clamp);
 }
@@ -372,7 +374,7 @@ static void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags)
 	TCP_SKB_CB(skb)->end_seq = seq;
 }
 
-static inline int tcp_urg_mode(const struct tcp_sock *tp)
+static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 {
 	return tp->snd_una != tp->snd_up;
 }
@@ -786,6 +788,160 @@ static unsigned tcp_established_options(struct sock *sk, struct sk_buff *skb,
 	return size;
 }
 
+
+/* TCP SMALL QUEUES (TSQ)
+ *
+ * TSQ goal is to keep small amount of skbs per tcp flow in tx queues (qdisc+dev)
+ * to reduce RTT and bufferbloat.
+ * We do this using a special skb destructor (tcp_wfree).
+ *
+ * Its important tcp_wfree() can be replaced by sock_wfree() in the event skb
+ * needs to be reallocated in a driver.
+ * The invariant being skb->truesize substracted from sk->sk_wmem_alloc
+ *
+ * Since transmit from skb destructor is forbidden, we use a tasklet
+ * to process all sockets that eventually need to send more skbs.
+ * We use one tasklet per cpu, with its own queue of sockets.
+ */
+struct tsq_tasklet {
+	struct tasklet_struct	tasklet;
+	struct list_head	head; /* queue of tcp sockets */
+};
+static DEFINE_PER_CPU(struct tsq_tasklet, tsq_tasklet);
+
+static void tcp_tsq_handler(struct sock *sk)
+{
+	if ((1 << sk->sk_state) &
+	    (TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_CLOSING |
+	     TCPF_CLOSE_WAIT  | TCPF_LAST_ACK))
+		tcp_write_xmit(sk, tcp_current_mss(sk), 0, 0, GFP_ATOMIC);
+}
+/*
+ * One tasklest per cpu tries to send more skbs.
+ * We run in tasklet context but need to disable irqs when
+ * transfering tsq->head because tcp_wfree() might
+ * interrupt us (non NAPI drivers)
+ */
+static void tcp_tasklet_func(unsigned long data)
+{
+	struct tsq_tasklet *tsq = (struct tsq_tasklet *)data;
+	LIST_HEAD(list);
+	unsigned long flags;
+	struct list_head *q, *n;
+	struct tcp_sock *tp;
+	struct sock *sk;
+
+	local_irq_save(flags);
+	list_splice_init(&tsq->head, &list);
+	local_irq_restore(flags);
+
+	list_for_each_safe(q, n, &list) {
+		tp = list_entry(q, struct tcp_sock, tsq_node);
+		list_del(&tp->tsq_node);
+
+		sk = (struct sock *)tp;
+		bh_lock_sock(sk);
+
+		if (!sock_owned_by_user(sk)) {
+			tcp_tsq_handler(sk);
+		} else {
+			/* defer the work to tcp_release_cb() */
+			set_bit(TCP_TSQ_DEFERRED, &tp->tsq_flags);
+		}
+		bh_unlock_sock(sk);
+
+		clear_bit(TSQ_QUEUED, &tp->tsq_flags);
+		sk_free(sk);
+	}
+}
+
+#define TCP_DEFERRED_ALL ((1UL << TCP_TSQ_DEFERRED) |		\
+			  (1UL << TCP_WRITE_TIMER_DEFERRED) |	\
+			  (1UL << TCP_DELACK_TIMER_DEFERRED) |	\
+			  (1UL << TCP_MTU_REDUCED_DEFERRED))
+/**
+ * tcp_release_cb - tcp release_sock() callback
+ * @sk: socket
+ *
+ * called from release_sock() to perform protocol dependent
+ * actions before socket release.
+ */
+void tcp_release_cb(struct sock *sk)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	unsigned long flags, nflags;
+
+	/* perform an atomic operation only if at least one flag is set */
+	do {
+		flags = tp->tsq_flags;
+		if (!(flags & TCP_DEFERRED_ALL))
+			return;
+		nflags = flags & ~TCP_DEFERRED_ALL;
+	} while (cmpxchg(&tp->tsq_flags, flags, nflags) != flags);
+
+	if (flags & (1UL << TCP_TSQ_DEFERRED))
+		tcp_tsq_handler(sk);
+
+	if (flags & (1UL << TCP_WRITE_TIMER_DEFERRED)) {
+		tcp_write_timer_handler(sk);
+		__sock_put(sk);
+	}
+	if (flags & (1UL << TCP_DELACK_TIMER_DEFERRED)) {
+		tcp_delack_timer_handler(sk);
+		__sock_put(sk);
+	}
+	if (flags & (1UL << TCP_MTU_REDUCED_DEFERRED)) {
+		sk->sk_prot->mtu_reduced(sk);
+		__sock_put(sk);
+	}
+}
+EXPORT_SYMBOL(tcp_release_cb);
+
+void __init tcp_tasklet_init(void)
+{
+	int i;
+
+	for_each_possible_cpu(i) {
+		struct tsq_tasklet *tsq = &per_cpu(tsq_tasklet, i);
+
+		INIT_LIST_HEAD(&tsq->head);
+		tasklet_init(&tsq->tasklet,
+			     tcp_tasklet_func,
+			     (unsigned long)tsq);
+	}
+}
+
+/*
+ * Write buffer destructor automatically called from kfree_skb.
+ * We cant xmit new skbs from this context, as we might already
+ * hold qdisc lock.
+ */
+void tcp_wfree(struct sk_buff *skb)
+{
+	struct sock *sk = skb->sk;
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (test_and_clear_bit(TSQ_THROTTLED, &tp->tsq_flags) &&
+	    !test_and_set_bit(TSQ_QUEUED, &tp->tsq_flags)) {
+		unsigned long flags;
+		struct tsq_tasklet *tsq;
+
+		/* Keep a ref on socket.
+		 * This last ref will be released in tcp_tasklet_func()
+		 */
+		atomic_sub(skb->truesize - 1, &sk->sk_wmem_alloc);
+
+		/* queue this socket to tasklet queue */
+		local_irq_save(flags);
+		tsq = &__get_cpu_var(tsq_tasklet);
+		list_add(&tp->tsq_node, &tsq->head);
+		tasklet_schedule(&tsq->tasklet);
+		local_irq_restore(flags);
+	} else {
+		sock_wfree(skb);
+	}
+}
+
 /* This routine actually transmits TCP packets queued in by
  * tcp_do_sendmsg().  This is used by both the initial
  * transmission and possible later retransmissions.
@@ -849,7 +1005,11 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 
 	skb_push(skb, tcp_header_size);
 	skb_reset_transport_header(skb);
-	skb_set_owner_w(skb, sk);
+
+	skb_orphan(skb);
+	skb->sk = sk;
+	skb->destructor = tcp_wfree;
+	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
 
 	/* Build TCP header and checksum it. */
 	th = tcp_hdr(skb);
@@ -906,6 +1066,8 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
 		TCP_ADD_STATS(sock_net(sk), TCP_MIB_OUTSEGS,
 			      tcp_skb_pcount(skb));
+
+	tp->segs_out += tcp_skb_pcount(skb);
 
 	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
 	if (likely(err <= 0))
@@ -1394,20 +1556,20 @@ static int tcp_init_tso_segs(const struct sock *sk, struct sk_buff *skb,
 }
 
 /* Minshall's variant of the Nagle send check. */
-static inline int tcp_minshall_check(const struct tcp_sock *tp)
+static inline bool tcp_minshall_check(const struct tcp_sock *tp)
 {
 	return after(tp->snd_sml, tp->snd_una) &&
 		!after(tp->snd_sml, tp->snd_nxt);
 }
 
-/* Return 0, if packet can be sent now without violation Nagle's rules:
+/* Return false, if packet can be sent now without violation Nagle's rules:
  * 1. It is full sized.
  * 2. Or it contains FIN. (already checked by caller)
  * 3. Or TCP_CORK is not set, and TCP_NODELAY is set.
  * 4. Or TCP_CORK is not set, and all sent packets are ACKed.
  *    With Minshall's modification: all sent small packets are ACKed.
  */
-static inline int tcp_nagle_check(const struct tcp_sock *tp,
+static inline bool tcp_nagle_check(const struct tcp_sock *tp,
 				  const struct sk_buff *skb,
 				  unsigned mss_now, int nonagle)
 {
@@ -1416,11 +1578,11 @@ static inline int tcp_nagle_check(const struct tcp_sock *tp,
 		 (!nonagle && tp->packets_out && tcp_minshall_check(tp)));
 }
 
-/* Return non-zero if the Nagle test allows this packet to be
+/* Return true if the Nagle test allows this packet to be
  * sent now.
  */
-static inline int tcp_nagle_test(const struct tcp_sock *tp, const struct sk_buff *skb,
-				 unsigned int cur_mss, int nonagle)
+static inline bool tcp_nagle_test(const struct tcp_sock *tp, const struct sk_buff *skb,
+				  unsigned int cur_mss, int nonagle)
 {
 	/* Nagle rule does not apply to frames, which sit in the middle of the
 	 * write_queue (they have no chances to get new data).
@@ -1429,24 +1591,25 @@ static inline int tcp_nagle_test(const struct tcp_sock *tp, const struct sk_buff
 	 * argument based upon the location of SKB in the send queue.
 	 */
 	if (nonagle & TCP_NAGLE_PUSH)
-		return 1;
+		return true;
 
 	/* Don't use the nagle rule for urgent data (or for the final FIN).
 	 * Nagle can be ignored during F-RTO too (see RFC4138).
 	 */
 	if (tcp_urg_mode(tp) || (tp->frto_counter == 2) ||
 	    (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN))
-		return 1;
+		return true;
 
 	if (!tcp_nagle_check(tp, skb, cur_mss, nonagle))
-		return 1;
+		return true;
 
-	return 0;
+	return false;
 }
 
 /* Does at least the first segment of SKB fit into the send window? */
-static inline int tcp_snd_wnd_test(const struct tcp_sock *tp, const struct sk_buff *skb,
-				   unsigned int cur_mss)
+static bool tcp_snd_wnd_test(const struct tcp_sock *tp,
+			     const struct sk_buff *skb,
+			     unsigned int cur_mss)
 {
 	u32 end_seq = TCP_SKB_CB(skb)->end_seq;
 
@@ -1479,7 +1642,7 @@ static unsigned int tcp_snd_test(const struct sock *sk, struct sk_buff *skb,
 }
 
 /* Test if sending is allowed right now. */
-int tcp_may_send_now(struct sock *sk)
+bool tcp_may_send_now(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb = tcp_send_head(sk);
@@ -1549,7 +1712,7 @@ static int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len,
  *
  * This algorithm is from John Heffner.
  */
-static int tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
+static bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -1580,7 +1743,7 @@ static int tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 
 	/* If a full-sized TSO skb can be sent, do it. */
 	if (limit >= min_t(unsigned int, sk->sk_gso_max_size,
-			   sk->sk_gso_max_segs * tp->mss_cache))
+			   tp->xmit_size_goal_segs * tp->mss_cache))
 		goto send_now;
 
 	/* Middle in queue won't get any more data, full sendable already? */
@@ -1613,11 +1776,11 @@ static int tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 	if (!tp->tso_deferred)
 		tp->tso_deferred = 1 | (jiffies << 1);
 
-	return 1;
+	return true;
 
 send_now:
 	tp->tso_deferred = 0;
-	return 0;
+	return false;
 }
 
 /* Create a new MTU probe if we are ready.
@@ -1759,11 +1922,11 @@ static int tcp_mtu_probe(struct sock *sk)
  * snd_up-64k-mss .. snd_up cannot be large. However, taking into
  * account rare use of URG, this is not a big flaw.
  *
- * Returns 1, if no segments are in flight and we have queued segments, but
- * cannot send anything now because of SWS or another problem.
+ * Returns true, if no segments are in flight and we have queued segments,
+ * but cannot send anything now because of SWS or another problem.
  */
-static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
-			  int push_one, gfp_t gfp)
+static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
+			   int push_one, gfp_t gfp)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
@@ -1777,7 +1940,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		/* Do MTU probing. */
 		result = tcp_mtu_probe(sk);
 		if (!result) {
-			return 0;
+			return false;
 		} else if (result > 0) {
 			sent_pkts = 1;
 		}
@@ -1804,6 +1967,24 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		} else {
 			if (!push_one && tcp_tso_should_defer(sk, skb))
 				break;
+		}
+
+		/* TCP Small Queues :
+		 * Control number of packets in qdisc/devices to two packets / or ~1 ms.
+		 * This allows for :
+		 *  - better RTT estimation and ACK scheduling
+		 *  - faster recovery
+		 *  - high rates
+		 * Alas, some drivers / subsystems require a fair amount
+		 * of queued bytes to ensure line rate.
+		 * One example is wifi aggregation (802.11 AMPDU)
+		 */
+		limit = max_t(unsigned int, sysctl_tcp_limit_output_bytes,
+			      sk->sk_pacing_rate >> 10);
+
+		if (atomic_read(&sk->sk_wmem_alloc) > limit) {
+			set_bit(TSQ_THROTTLED, &tp->tsq_flags);
+			break;
 		}
 
 		limit = mss_now;
@@ -1846,7 +2027,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 	if (likely(sent_pkts)) {
 		tcp_cwnd_validate(sk);
-		return 0;
+		return false;
 	}
 	return !tp->packets_out && tcp_send_head(sk);
 }
@@ -2045,22 +2226,22 @@ static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 }
 
 /* Check if coalescing SKBs is legal. */
-static int tcp_can_collapse(const struct sock *sk, const struct sk_buff *skb)
+static bool tcp_can_collapse(const struct sock *sk, const struct sk_buff *skb)
 {
 	if (tcp_skb_pcount(skb) > 1)
-		return 0;
+		return false;
 	/* TODO: SACK collapsing could be used to remove this condition */
 	if (skb_shinfo(skb)->nr_frags != 0)
-		return 0;
+		return false;
 	if (skb_cloned(skb))
-		return 0;
+		return false;
 	if (skb == tcp_send_head(sk))
-		return 0;
+		return false;
 	/* Some heurestics for collapsing over SACK'd could be invented */
 	if (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)
-		return 0;
+		return false;
 
-	return 1;
+	return true;
 }
 
 /* Collapse packets in the retransmit queue to make to create
@@ -2071,7 +2252,7 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb = to, *tmp;
-	int first = 1;
+	bool first = true;
 
 	if (!sysctl_tcp_retrans_collapse)
 		return;
@@ -2085,7 +2266,7 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 		space -= skb->len;
 
 		if (first) {
-			first = 0;
+			first = false;
 			continue;
 		}
 
@@ -2236,18 +2417,18 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 /* Check if we forward retransmits are possible in the current
  * window/congestion state.
  */
-static int tcp_can_forward_retransmit(struct sock *sk)
+static bool tcp_can_forward_retransmit(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	const struct tcp_sock *tp = tcp_sk(sk);
 
 	/* Forward retransmissions are possible only during Recovery. */
 	if (icsk->icsk_ca_state != TCP_CA_Recovery)
-		return 0;
+		return false;
 
 	/* No forward retransmissions in Reno are possible. */
 	if (tcp_is_reno(tp))
-		return 0;
+		return false;
 
 	/* Yeah, we have to make difficult choice between forward transmission
 	 * and retransmission... Both ways have their merits...
@@ -2258,9 +2439,9 @@ static int tcp_can_forward_retransmit(struct sock *sk)
 	 */
 
 	if (tcp_may_send_now(sk))
-		return 0;
+		return false;
 
-	return 1;
+	return true;
 }
 
 /* This gets called after a retransmit timeout, and the initially

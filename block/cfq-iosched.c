@@ -1226,10 +1226,11 @@ static void cfq_destroy_cfqg(struct cfq_data *cfqd, struct cfq_group *cfqg)
 	cfq_put_cfqg(cfqg);
 }
 
-static void cfq_release_cfq_groups(struct cfq_data *cfqd)
+static bool cfq_release_cfq_groups(struct cfq_data *cfqd)
 {
 	struct hlist_node *pos, *n;
 	struct cfq_group *cfqg;
+	bool empty = true;
 
 	hlist_for_each_entry_safe(cfqg, pos, n, &cfqd->cfqg_list, cfqd_node) {
 		/*
@@ -1239,7 +1240,10 @@ static void cfq_release_cfq_groups(struct cfq_data *cfqd)
 		 */
 		if (!cfq_blkiocg_del_blkio_group(&cfqg->blkg))
 			cfq_destroy_cfqg(cfqd, cfqg);
+		else
+			empty = false;
 	}
+	return empty;
 }
 
 /*
@@ -1264,6 +1268,19 @@ static void cfq_unlink_blkio_group(void *key, struct blkio_group *blkg)
 	spin_lock_irqsave(cfqd->queue->queue_lock, flags);
 	cfq_destroy_cfqg(cfqd, cfqg_of_blkg(blkg));
 	spin_unlock_irqrestore(cfqd->queue->queue_lock, flags);
+}
+
+static struct elevator_type iosched_cfq;
+
+static bool cfq_clear_queue(struct request_queue *q)
+{
+	lockdep_assert_held(q->queue_lock);
+
+	/* shoot down blkgs iff the current elevator is cfq */
+	if (!q->elevator || q->elevator->type != &iosched_cfq)
+		return true;
+
+	return cfq_release_cfq_groups(q->elevator->elevator_data);
 }
 
 #else /* GROUP_IOSCHED */
@@ -1663,7 +1680,8 @@ cfq_merged_requests(struct request_queue *q, struct request *rq,
 	 * reposition in fifo if next is older than rq
 	 */
 	if (!list_empty(&rq->queuelist) && !list_empty(&next->queuelist) &&
-	    time_before(rq_fifo_time(next), rq_fifo_time(rq))) {
+	    time_before(rq_fifo_time(next), rq_fifo_time(rq)) &&
+	    cfqq == RQ_CFQQ(next)) {
 		list_move(&rq->queuelist, &next->queuelist);
 		rq_set_fifo_time(rq, rq_fifo_time(next));
 	}
@@ -2016,7 +2034,8 @@ static void cfq_arm_slice_timer(struct cfq_data *cfqd)
 	 * for devices that support queuing, otherwise we still have a problem
 	 * with sync vs async workloads.
 	 */
-	if (blk_queue_nonrot(cfqd->queue) && cfqd->hw_tag)
+	if (blk_queue_nonrot(cfqd->queue) && cfqd->hw_tag &&
+		!cfqd->cfq_group_idle)
 		return;
 
 	WARN_ON(!RB_EMPTY_ROOT(&cfqq->sort_list));
@@ -2043,7 +2062,7 @@ static void cfq_arm_slice_timer(struct cfq_data *cfqd)
 	 * task has exited, don't wait
 	 */
 	cic = cfqd->active_cic;
-	if (!cic || !atomic_read(&cic->icq.ioc->nr_tasks))
+	if (!cic || !atomic_read(&cic->icq.ioc->active_ref))
 		return;
 
 	/*
@@ -2089,6 +2108,7 @@ static void cfq_dispatch_insert(struct request_queue *q, struct request *rq)
 	cfq_remove_request(rq);
 	cfqq->dispatched++;
 	(RQ_CFQG(rq))->dispatched++;
+	rq->ioprio = IOPRIO_PRIO_VALUE(cfqq->ioprio_class, cfqq->ioprio);
 	elv_dispatch_sort(q, rq);
 
 	cfqd->rq_in_flight[cfq_cfqq_sync(cfqq)]++;
@@ -2116,7 +2136,6 @@ static struct request *cfq_check_fifo(struct cfq_queue *cfqq)
 	if (time_before(jiffies, rq_fifo_time(rq)))
 		rq = NULL;
 
-	cfq_log_cfqq(cfqq->cfqd, cfqq, "fifo=%p", rq);
 	return rq;
 }
 
@@ -2488,6 +2507,9 @@ static bool cfq_may_dispatch(struct cfq_data *cfqd, struct cfq_queue *cfqq)
 {
 	unsigned int max_dispatch;
 
+	if (cfq_cfqq_must_dispatch(cfqq))
+		return true;
+
 	/*
 	 * Drain async requests before we start sync IO
 	 */
@@ -2579,15 +2601,20 @@ static bool cfq_dispatch_request(struct cfq_data *cfqd, struct cfq_queue *cfqq)
 
 	BUG_ON(RB_EMPTY_ROOT(&cfqq->sort_list));
 
+	rq = cfq_check_fifo(cfqq);
+	if (rq)
+		cfq_mark_cfqq_must_dispatch(cfqq);
+
 	if (!cfq_may_dispatch(cfqd, cfqq))
 		return false;
 
 	/*
 	 * follow expired path, else get first next available
 	 */
-	rq = cfq_check_fifo(cfqq);
 	if (!rq)
 		rq = cfqq->next_rq;
+	else
+		cfq_log_cfqq(cfqq->cfqd, cfqq, "fifo=%p", rq);
 
 	/*
 	 * insert request into driver dispatch list
@@ -3010,7 +3037,7 @@ cfq_update_idle_window(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 
 	if (cfqq->next_rq && (cfqq->next_rq->cmd_flags & REQ_NOIDLE))
 		enable_idle = 0;
-	else if (!atomic_read(&cic->icq.ioc->nr_tasks) ||
+	else if (!atomic_read(&cic->icq.ioc->active_ref) ||
 		 !cfqd->cfq_slice_idle ||
 		 (!cfq_cfqq_deep(cfqq) && CFQQ_SEEKY(cfqq)))
 		enable_idle = 0;
@@ -3060,7 +3087,7 @@ cfq_should_preempt(struct cfq_data *cfqd, struct cfq_queue *new_cfqq,
 	 * if the new request is sync, but the currently running queue is
 	 * not, let the sync request have priority.
 	 */
-	if (rq_is_sync(rq) && !cfq_cfqq_sync(cfqq))
+	if (rq_is_sync(rq) && !cfq_cfqq_sync(cfqq) && !cfq_cfqq_must_dispatch(cfqq))
 		return true;
 
 	if (new_cfqq->cfqg != cfqq->cfqg)
@@ -3658,7 +3685,7 @@ static void cfq_exit_queue(struct elevator_queue *e)
 	kfree(cfqd);
 }
 
-static void *cfq_init_queue(struct request_queue *q)
+static int cfq_init_queue(struct request_queue *q)
 {
 	struct cfq_data *cfqd;
 	int i, j;
@@ -3667,7 +3694,7 @@ static void *cfq_init_queue(struct request_queue *q)
 
 	cfqd = kmalloc_node(sizeof(*cfqd), GFP_KERNEL | __GFP_ZERO, q->node);
 	if (!cfqd)
-		return NULL;
+		return -ENOMEM;
 
 	/* Init root service tree */
 	cfqd->grp_service_tree = CFQ_RB_ROOT;
@@ -3694,7 +3721,7 @@ static void *cfq_init_queue(struct request_queue *q)
 	if (blkio_alloc_blkg_stats(&cfqg->blkg)) {
 		kfree(cfqg);
 		kfree(cfqd);
-		return NULL;
+		return -ENOMEM;
 	}
 
 	rcu_read_lock();
@@ -3725,6 +3752,7 @@ static void *cfq_init_queue(struct request_queue *q)
 	cfq_link_cfqq_cfqg(&cfqd->oom_cfqq, &cfqd->root_group);
 
 	cfqd->queue = q;
+	q->elevator->elevator_data = cfqd;
 
 	init_timer(&cfqd->idle_slice_timer);
 	cfqd->idle_slice_timer.function = cfq_idle_slice_timer;
@@ -3750,7 +3778,7 @@ static void *cfq_init_queue(struct request_queue *q)
 	 * second, in order to have larger depth for async operations.
 	 */
 	cfqd->last_delayed_sync = jiffies - HZ;
-	return cfqd;
+	return 0;
 }
 
 /*
@@ -3880,6 +3908,7 @@ static struct elevator_type iosched_cfq = {
 static struct blkio_policy_type blkio_policy_cfq = {
 	.ops = {
 		.blkio_unlink_group_fn =	cfq_unlink_blkio_group,
+		.blkio_clear_queue_fn = cfq_clear_queue,
 		.blkio_update_group_weight_fn =	cfq_update_blkio_group_weight,
 	},
 	.plid = BLKIO_POLICY_PROP,
