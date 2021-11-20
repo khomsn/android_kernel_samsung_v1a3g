@@ -624,18 +624,32 @@ static inline size_t snd_pcm_lib_period_bytes(struct snd_pcm_substream *substrea
 static inline snd_pcm_uframes_t snd_pcm_playback_avail(struct snd_pcm_runtime *runtime)
 {
 	snd_pcm_sframes_t avail = runtime->status->hw_ptr + runtime->buffer_size - runtime->control->appl_ptr;
-	if (avail <= 0) {
-        avail = 64;
-        runtime->status->hw_ptr =  runtime->control->appl_ptr - runtime->buffer_size + avail;
-    }
-	else if ((snd_pcm_uframes_t) avail > runtime->buffer_size) {
-        if (runtime->control->appl_ptr <= runtime->buffer_size) {
-            avail = runtime->buffer_size - runtime->control->appl_ptr;
-        }else{
-            avail = runtime->buffer_size;
+    snd_pcm_sframes_t avail_now;
+
+    static snd_pcm_sframes_t avail_prev = 0;
+    if ((snd_pcm_uframes_t) avail > runtime->buffer_size) {
+        if (runtime->control->appl_ptr >= runtime->buffer_size) {
+            avail = runtime->period_size;
+        } else {
+            if ((runtime->boundary - runtime->status->hw_ptr) >=0  &&  (runtime->boundary - runtime->status->hw_ptr) < runtime->buffer_size) {
+                avail = runtime->buffer_size - runtime->control->appl_ptr - (runtime->boundary - runtime->status->hw_ptr);
+            }
         }
-        runtime->status->hw_ptr =  runtime->control->appl_ptr - runtime->buffer_size + avail;
+        runtime->status->hw_ptr =  runtime->control->appl_ptr - runtime->buffer_size + avail; 
     }
+	if (avail < 0) {
+		avail += runtime->boundary;
+        avail = avail % runtime->buffer_size;
+        runtime->status->hw_ptr =  runtime->control->appl_ptr - runtime->buffer_size + avail; 
+    }
+    avail_now = avail;
+    if ((avail_prev - avail_now) > runtime->period_size){
+        avail_now = avail_prev - runtime->period_size;
+        if (avail_now >= 0 && avail_now <= runtime->buffer_size) {
+            avail = avail_now;
+        }
+    }
+    avail_prev = avail;
 	return avail;
 }
 
