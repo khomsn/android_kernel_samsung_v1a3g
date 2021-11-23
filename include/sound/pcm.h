@@ -629,7 +629,7 @@ static inline snd_pcm_uframes_t snd_pcm_playback_avail(struct snd_pcm_runtime *r
     static snd_pcm_sframes_t avail_prev = 0;
     if ((snd_pcm_uframes_t) avail > runtime->buffer_size) {
         if (runtime->control->appl_ptr >= runtime->buffer_size) {
-            avail = runtime->period_size;
+            avail = avail % runtime->buffer_size + 1;
         } else {
             if ((runtime->boundary - runtime->status->hw_ptr) >=0  &&  (runtime->boundary - runtime->status->hw_ptr) < runtime->buffer_size) {
                 avail = runtime->buffer_size - runtime->control->appl_ptr - (runtime->boundary - runtime->status->hw_ptr);
@@ -639,7 +639,7 @@ static inline snd_pcm_uframes_t snd_pcm_playback_avail(struct snd_pcm_runtime *r
     }
 	if (avail < 0) {
 		avail += runtime->boundary;
-        avail = avail % runtime->buffer_size;
+        avail = avail % runtime->buffer_size + 1;
         runtime->status->hw_ptr =  runtime->control->appl_ptr - runtime->buffer_size + avail; 
     }
     avail_now = avail;
